@@ -17,19 +17,16 @@
 package com.android.tools.build.bundletool.validation;
 
 import static com.android.tools.build.bundletool.model.BundleModuleName.BASE_MODULE_NAME;
-import static com.google.common.base.Preconditions.checkArgument;
+import static com.android.tools.build.bundletool.model.utils.ModuleDependenciesUtils.buildAdjacencyMap;
 
-import com.android.tools.build.bundletool.model.AndroidManifest;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.BundleModule.ModuleDeliveryType;
 import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
-import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
-import com.google.common.collect.Multimaps;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -61,48 +58,10 @@ public class ModuleDependencyValidator extends SubValidator {
     checkModulesHaveUniqueDependencies(moduleDependenciesMap);
     checkReferencedModulesExist(moduleDependenciesMap);
     checkNoCycles(moduleDependenciesMap);
-    checkNoInstallTimeToOnDemandModulesDependencies(moduleDependenciesMap, modulesByName);
+    checkInstantModuleDependencies(moduleDependenciesMap, modulesByName);
+    checkValidModuleDeliveryTypeDependencies(moduleDependenciesMap, modulesByName);
     checkMinSdkIsCompatibleWithDependencies(moduleDependenciesMap, modulesByName);
-  }
-
-  /**
-   * Builds a map of module dependencies.
-   *
-   * <p>If module "a" contains {@code <uses-split name="b"/>} manifest entry, then the map contains
-   * entry ("a", "b").
-   *
-   * <p>All modules implicitly depend on the "base" module. Hence the map contains also dependency
-   * ("base", "base").
-   */
-  private static Multimap<String, String> buildAdjacencyMap(ImmutableList<BundleModule> modules) {
-    Multimap<String, String> moduleDependenciesMap = ArrayListMultimap.create();
-
-    for (BundleModule module : modules) {
-      String moduleName = module.getName().getName();
-      AndroidManifest manifest = module.getAndroidManifest();
-
-      checkArgument(
-          !moduleDependenciesMap.containsKey(moduleName),
-          "Module named '%s' was passed in multiple times.",
-          moduleName);
-
-      moduleDependenciesMap.putAll(moduleName, manifest.getUsesSplits());
-
-      // Check that module does not declare explicit dependency on the "base" module
-      // (whose split ID actually is empty instead of "base" anyway).
-      if (moduleDependenciesMap.containsEntry(moduleName, BASE_MODULE_NAME)) {
-        throw ValidationException.builder()
-            .withMessage(
-                "Module '%s' declares dependency on the '%s' module, which is implicit.",
-                moduleName, BASE_MODULE_NAME)
-            .build();
-      }
-
-      // Add implicit dependency on the base. Also ensures that every module has a key in the map.
-      moduleDependenciesMap.put(moduleName, BASE_MODULE_NAME);
-    }
-
-    return Multimaps.unmodifiableMultimap(moduleDependenciesMap);
+    checkAssetModulesHaveNoDependencies(moduleDependenciesMap, modulesByName);
   }
 
   private static void checkHasBaseModule(ImmutableList<BundleModule> modules) {
@@ -128,7 +87,7 @@ public class ModuleDependencyValidator extends SubValidator {
   private static void checkNoReflexiveDependencies(Multimap<String, String> moduleDependenciesMap) {
     for (String moduleName : moduleDependenciesMap.keySet()) {
       // The base module is the only one that will have a self-loop in the dependencies map.
-      if (!moduleName.equals(BASE_MODULE_NAME)) {
+      if (!moduleName.equals(BASE_MODULE_NAME.getName())) {
         if (moduleDependenciesMap.containsEntry(moduleName, moduleName)) {
           throw ValidationException.builder()
               .withMessage("Module '%s' depends on itself via <uses-split>.", moduleName)
@@ -218,7 +177,7 @@ public class ModuleDependencyValidator extends SubValidator {
   }
 
   /** Checks that an install-time module does not depend on an on-demand module. */
-  private static void checkNoInstallTimeToOnDemandModulesDependencies(
+  private static void checkValidModuleDeliveryTypeDependencies(
       Multimap<String, String> moduleDependenciesMap,
       ImmutableMap<String, BundleModule> modulesByName) {
     for (Entry<String, String> dependencyEntry : moduleDependenciesMap.entries()) {
@@ -229,7 +188,7 @@ public class ModuleDependencyValidator extends SubValidator {
 
       // Conditional modules can't have dependencies.
       if (moduleDeliveryType.equals(ModuleDeliveryType.CONDITIONAL_INITIAL_INSTALL)
-          && !moduleDep.equals(BASE_MODULE_NAME)) {
+          && !moduleDep.equals(BASE_MODULE_NAME.getName())) {
         throw ValidationException.builder()
             .withMessage(
                 "Conditional module '%s' cannot have dependencies but uses module '%s'.",
@@ -288,6 +247,46 @@ public class ModuleDependencyValidator extends SubValidator {
                 "Conditional or on-demand module '%s' has a minSdkVersion(%d), which is"
                     + " smaller than the minSdkVersion(%d) of its dependency '%s'.",
                 moduleName, minSdk, minSdkDep, moduleDepName)
+            .build();
+      }
+    }
+  }
+
+  private static void checkAssetModulesHaveNoDependencies(
+      Multimap<String, String> moduleDependenciesMap,
+      ImmutableMap<String, BundleModule> modulesByName) {
+    for (Entry<String, String> dependencyEntry : moduleDependenciesMap.entries()) {
+      String moduleName = dependencyEntry.getKey();
+      String moduleDepName = dependencyEntry.getValue();
+      ModuleType moduleType = modulesByName.get(moduleName).getModuleType();
+      ModuleType moduleDepType = modulesByName.get(moduleDepName).getModuleType();
+      if (!moduleDepName.equals(BASE_MODULE_NAME.getName())
+          && (moduleType.equals(ModuleType.ASSET_MODULE)
+              || moduleDepType.equals(ModuleType.ASSET_MODULE))) {
+        throw ValidationException.builder()
+            .withMessage(
+                "Module '%s' cannot depend on module '%s' because one of them is an asset pack.",
+                moduleName, moduleDepName)
+            .build();
+      }
+    }
+  }
+
+  /** Instant modules should only depend on other instant compatible modules. */
+  private static void checkInstantModuleDependencies(
+      Multimap<String, String> moduleDependenciesMap,
+      ImmutableMap<String, BundleModule> modulesByName) {
+    for (Entry<String, String> dependencyEntry : moduleDependenciesMap.entries()) {
+      String moduleName = dependencyEntry.getKey();
+      String moduleDepName = dependencyEntry.getValue();
+      boolean isInstantModule = modulesByName.get(moduleName).isInstantModule();
+      boolean isDepInstantModule = modulesByName.get(moduleDepName).isInstantModule();
+
+      if (isInstantModule && !isDepInstantModule) {
+        throw ValidationException.builder()
+            .withMessage(
+                "Instant module '%s' cannot depend on a module '%s' that is not instant.",
+                moduleName, moduleDepName)
             .build();
       }
     }

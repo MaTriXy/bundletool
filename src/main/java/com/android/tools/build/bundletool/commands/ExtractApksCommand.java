@@ -23,20 +23,24 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
+import com.android.bundle.Commands.AssetModuleMetadata;
+import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.DeliveryType;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.tools.build.bundletool.commands.CommandHelp.CommandDescription;
 import com.android.tools.build.bundletool.commands.CommandHelp.FlagDescription;
 import com.android.tools.build.bundletool.device.ApkMatcher;
 import com.android.tools.build.bundletool.device.DeviceSpecParser;
+import com.android.tools.build.bundletool.device.IncompatibleDeviceException;
 import com.android.tools.build.bundletool.flags.Flag;
 import com.android.tools.build.bundletool.flags.ParsedFlags;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
 import com.android.tools.build.bundletool.model.utils.FileNames;
 import com.android.tools.build.bundletool.model.utils.ResultUtils;
 import com.android.tools.build.bundletool.model.utils.files.BufferedIo;
+import com.android.tools.build.bundletool.model.utils.files.FileUtils;
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
@@ -50,12 +54,16 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.logging.Logger;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /** Extracts from an APK Set the APKs to be installed on a given device. */
 @AutoValue
 public abstract class ExtractApksCommand {
+
+  private static final Logger logger = Logger.getLogger(ExtractApksCommand.class.getName());
 
   public static final String COMMAND_NAME = "extract-apks";
   static final String ALL_MODULES_SHORTCUT = "_ALL_";
@@ -90,6 +98,10 @@ public abstract class ExtractApksCommand {
 
     public abstract Builder setDeviceSpec(DeviceSpec deviceSpec);
 
+    public Builder setDeviceSpec(Path deviceSpecPath) {
+      return setDeviceSpec(DeviceSpecParser.parseDeviceSpec(deviceSpecPath));
+    }
+
     public abstract Builder setOutputDirectory(Path outputDirectory);
 
     public abstract Builder setModules(ImmutableSet<String> modules);
@@ -103,7 +115,21 @@ public abstract class ExtractApksCommand {
     public abstract Builder setInstant(boolean instant);
 
 
-    public abstract ExtractApksCommand build();
+    abstract ExtractApksCommand autoBuild();
+
+    /**
+     * Builds the command
+     *
+     * @throws ValidationException if the device spec is invalid. See {@link
+     *     DeviceSpecParser#validateDeviceSpec}
+     */
+    public ExtractApksCommand build() {
+      ExtractApksCommand command = autoBuild();
+      DeviceSpecParser.validateDeviceSpec(
+          command.getDeviceSpec(),
+          /* canSkipFields= */ true); // Allow partial device spec for APEX bundles
+      return command;
+    }
   }
 
   public static ExtractApksCommand fromFlags(ParsedFlags flags) {
@@ -147,19 +173,28 @@ public abstract class ExtractApksCommand {
             .map(
                 modules ->
                     modules.contains(ALL_MODULES_SHORTCUT)
-                        ? toc.getVariantList().stream()
-                            .flatMap(variant -> variant.getApkSetList().stream())
-                            .map(apkSet -> apkSet.getModuleMetadata().getName())
+                        ? Stream.concat(
+                                toc.getVariantList().stream()
+                                    .flatMap(variant -> variant.getApkSetList().stream())
+                                    .map(apkSet -> apkSet.getModuleMetadata().getName()),
+                                toc.getAssetSliceSetList().stream()
+                                    .filter(
+                                        sliceSet ->
+                                            sliceSet
+                                                .getAssetModuleMetadata()
+                                                .getDeliveryType()
+                                                .equals(DeliveryType.INSTALL_TIME))
+                                    .map(AssetSliceSet::getAssetModuleMetadata)
+                                    .map(AssetModuleMetadata::getName))
                             .collect(toImmutableSet())
                         : modules);
+    validateAssetModules(toc, requestedModuleNames);
 
     ApkMatcher apkMatcher = new ApkMatcher(getDeviceSpec(), requestedModuleNames, getInstant());
     ImmutableList<ZipPath> matchedApks = apkMatcher.getMatchingApks(toc);
 
     if (matchedApks.isEmpty()) {
-      throw CommandExecutionException.builder()
-          .withMessage("No compatible APKs found for the device.")
-          .build();
+      throw new IncompatibleDeviceException("No compatible APKs found for the device.");
     }
 
 
@@ -188,11 +223,46 @@ public abstract class ExtractApksCommand {
     }
   }
 
+  /** Check that none of the requested modules is an asset module that is not install-time. */
+  private static void validateAssetModules(
+      BuildApksResult toc, Optional<ImmutableSet<String>> requestedModuleNames) {
+    if (requestedModuleNames.isPresent()) {
+      ImmutableList<String> requestedNonInstallTimeAssetModules =
+          toc.getAssetSliceSetList().stream()
+              .filter(
+                  sliceSet ->
+                      !sliceSet
+                          .getAssetModuleMetadata()
+                          .getDeliveryType()
+                          .equals(DeliveryType.INSTALL_TIME))
+              .map(AssetSliceSet::getAssetModuleMetadata)
+              .map(AssetModuleMetadata::getName)
+              .filter(requestedModuleNames.get()::contains)
+              .collect(toImmutableList());
+      if (!requestedNonInstallTimeAssetModules.isEmpty()) {
+        throw ValidationException.builder()
+            .withMessage(
+                String.format(
+                    "The following requested asset packs do not have install time delivery: %s.",
+                    requestedNonInstallTimeAssetModules))
+            .build();
+      }
+    }
+  }
+
   private ImmutableList<Path> extractMatchedApksFromApksArchive(
       ImmutableList<ZipPath> matchedApkPaths) {
     Path outputDirectoryPath =
         getOutputDirectory().orElseGet(ExtractApksCommand::createTempDirectory);
-    checkDirectoryExists(outputDirectoryPath);
+
+    getOutputDirectory()
+        .ifPresent(
+            dir -> {
+              if (!Files.exists(dir)) {
+                logger.info("Output directory '" + dir + "' does not exist, creating it.");
+                FileUtils.createDirectories(dir);
+              }
+            });
 
     ImmutableList.Builder<Path> builder = ImmutableList.builder();
     try (ZipFile apksArchive = new ZipFile(getApksArchivePath().toFile())) {
@@ -267,10 +337,10 @@ public abstract class ExtractApksCommand {
                 .setExampleValue("base,module1,module2")
                 .setOptional(true)
                 .setDescription(
-                    "List of modules to be extracted, or \"%s\" for all modules. Defaults to "
-                        + "modules installed during the first install, i.e. not on-demand. Note "
-                        + "that the dependent modules will also be extracted. The value of this "
-                        + "flag is ignored if the device receives a standalone APK.",
+                    "List of modules to be extracted, or \"%s\" for all modules. "
+                        + "Defaults to modules installed during the first install, i.e. not "
+                        + "on-demand. Note that the dependent modules will also be extracted. The "
+                        + "value of this flag is ignored if the device receives a standalone APK.",
                     ALL_MODULES_SHORTCUT)
                 .build())
         .addFlag(

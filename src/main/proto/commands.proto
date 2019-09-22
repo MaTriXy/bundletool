@@ -2,10 +2,10 @@ syntax = "proto3";
 
 package android.bundle;
 
-option java_package = "com.android.bundle";
-
 import "config.proto";
 import "targeting.proto";
+
+option java_package = "com.android.bundle";
 
 // Describes the output of the "build-apks" command.
 message BuildApksResult {
@@ -16,7 +16,7 @@ message BuildApksResult {
   Bundletool bundletool = 2;
 
   // List of the created asset slices.
-  repeated AssetSlice asset_slice = 3;
+  repeated AssetSliceSet asset_slice_set = 3;
 }
 
 // Variant is a group of APKs that covers a part of the device configuration
@@ -37,16 +37,6 @@ message Variant {
   uint32 variant_number = 3;
 }
 
-message AssetSlice {
-  // Asset slice targeting.
-  AssetSliceTargeting targeting = 1;
-
-  AssetModuleMetadata asset_module_metadata = 2;
-
-  // APKs.
-  repeated ApkDescription apk_description = 3;
-}
-
 // Represents a module.
 // For pre-L devices multiple modules (possibly all) may be merged into one.
 message ApkSet {
@@ -60,9 +50,8 @@ message ModuleMetadata {
   // Module name.
   string name = 1;
 
-  // Indicates whether this module is marked "on demand".
-  // Set only for Split APKs.
-  bool on_demand = 2;
+  // Indicates the delivery type (e.g. on-demand) of the module.
+  DeliveryType delivery_type = 6;
 
   // Indicates whether this module is marked "instant".
   bool is_instant = 3;
@@ -74,25 +63,50 @@ message ModuleMetadata {
   // The targeting that makes a conditional module installed.
   // Relevant only for Split APKs.
   ModuleTargeting targeting = 5;
+
+  // Deprecated. Please use delivery_type.
+  bool on_demand_deprecated = 2 [deprecated = true];
+}
+
+// Set of asset slices belonging to a single asset module.
+message AssetSliceSet {
+  // Module level metadata.
+  AssetModuleMetadata asset_module_metadata = 1;
+
+  // Asset slices.
+  repeated ApkDescription apk_description = 2;
 }
 
 message AssetModuleMetadata {
   // Module name.
   string name = 1;
 
-  // Indicates whether this module is marked "on demand" for persistent install.
-  bool on_demand = 2;
+  // Indicates the delivery type for persistent install.
+  DeliveryType delivery_type = 4;
 
   // Metadata for instant installs.
   InstantMetadata instant_metadata = 3;
+
+  // Deprecated. Use delivery_type.
+  bool on_demand_deprecated = 2 [deprecated = true];
 }
 
 message InstantMetadata {
   // Indicates whether this module is marked "instant".
   bool is_instant = 1;
 
-  // Indicates whether this module is marked "on demand" for instant install.
-  bool on_demand = 2;
+  // Indicates the delivery type for instant install.
+  DeliveryType delivery_type = 3;
+
+  // Deprecated. Use delivery_type.
+  bool on_demand_deprecated = 2 [deprecated = true];
+}
+
+enum DeliveryType {
+  UNKNOWN_DELIVERY_TYPE = 0;
+  INSTALL_TIME = 1;
+  ON_DEMAND = 2;
+  FAST_FOLLOW = 3;
 }
 
 message ApkDescription {

@@ -55,7 +55,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.DeliveryType;
 import com.android.bundle.Commands.Variant;
+import com.android.bundle.Config.Bundletool;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.SdkVersion;
@@ -72,6 +74,7 @@ import com.android.tools.build.bundletool.model.SizeConfiguration;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
@@ -248,7 +251,7 @@ public final class GetSizeCommandTest {
             new FlagParser()
                 .parse("get-size", "total", "--apks=" + apksArchiveFile, "--dimensions=" + "ALL"));
 
-    assertThat(command.getDimensions()).isSameAs(SUPPORTED_DIMENSIONS);
+    assertThat(command.getDimensions()).isSameInstanceAs(SUPPORTED_DIMENSIONS);
   }
 
   @Test
@@ -297,7 +300,8 @@ public final class GetSizeCommandTest {
   }
 
   @Test
-  public void builderAndFlagsConstruction_optionalDeviceSpec_equivalent() throws Exception {
+  public void builderAndFlagsConstruction_optionalDeviceSpec_inJavaViaApi_equivalent()
+      throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = BuildApksResult.getDefaultInstance();
@@ -318,6 +322,35 @@ public final class GetSizeCommandTest {
         GetSizeCommand.builder()
             .setApksArchivePath(apksArchiveFile)
             .setDeviceSpec(deviceSpec)
+            .setGetSizeSubCommand(GetSizeSubcommand.TOTAL)
+            .build();
+
+    assertThat(fromFlags).isEqualTo(fromBuilderApi);
+  }
+
+  @Test
+  public void builderAndFlagsConstruction_optionalDeviceSpec_inJavaViaFiles_equivalent()
+      throws Exception {
+    DeviceSpec deviceSpec = deviceWithSdk(21);
+    Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
+    BuildApksResult tableOfContentsProto = BuildApksResult.getDefaultInstance();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+
+    GetSizeCommand fromFlags =
+        GetSizeCommand.fromFlags(
+            new FlagParser()
+                .parse(
+                    "get-size",
+                    "total",
+                    "--apks=" + apksArchiveFile,
+                    // Optional values.
+                    "--device-spec=" + deviceSpecFile));
+
+    GetSizeCommand fromBuilderApi =
+        GetSizeCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpecFile)
             .setGetSizeSubCommand(GetSizeSubcommand.TOTAL)
             .build();
 
@@ -402,7 +435,13 @@ public final class GetSizeCommandTest {
         EntryOption.UNCOMPRESSED); // APK stored uncompressed in the APKs zip.
     archiveBuilder.addFileWithContent(ZipPath.create("base-x86_64.apk"), new byte[10000]);
     archiveBuilder.addFileWithProtoContent(
-        ZipPath.create("toc.pb"), BuildApksResult.newBuilder().addVariant(lVariant).build());
+        ZipPath.create("toc.pb"),
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .build());
     Path apksArchiveFile = archiveBuilder.writeTo(tmpDir.resolve("bundle.apks"));
 
     ConfigurationSizes configurationSizes =
@@ -452,6 +491,9 @@ public final class GetSizeCommandTest {
     archiveBuilder.addFileWithProtoContent(
         ZipPath.create("toc.pb"),
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(preLLdpiVariant)
             .addVariant(preLMdpiVariant)
             .build());
@@ -502,7 +544,13 @@ public final class GetSizeCommandTest {
     archiveBuilder.addFileWithContent(ZipPath.create("preL.apk"), new byte[10000]);
     archiveBuilder.addFileWithProtoContent(
         ZipPath.create("toc.pb"),
-        BuildApksResult.newBuilder().addVariant(lVariant).addVariant(preLVariant).build());
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .addVariant(preLVariant)
+            .build());
     Path apksArchiveFile = archiveBuilder.writeTo(tmpDir.resolve("bundle.apks"));
 
     ConfigurationSizes configurationSizes =
@@ -556,7 +604,12 @@ public final class GetSizeCommandTest {
                     /* isMasterSplit= */ false)));
 
     BuildApksResult tableOfContentsProto =
-        BuildApksResult.newBuilder().addVariant(lVariant).build();
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .build();
     Path apksArchiveFile =
         createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
 
@@ -637,7 +690,13 @@ public final class GetSizeCommandTest {
             ZipPath.create("preL.apk"));
 
     BuildApksResult tableOfContentsProto =
-        BuildApksResult.newBuilder().addVariant(lVariant).addVariant(preLVariant).build();
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .addVariant(preLVariant)
+            .build();
     Path apksArchiveFile =
         createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
 
@@ -728,7 +787,13 @@ public final class GetSizeCommandTest {
             ApkTargeting.getDefaultInstance(),
             ZipPath.create("preL.apk"));
     BuildApksResult tableOfContentsProto =
-        BuildApksResult.newBuilder().addVariant(lVariant).addVariant(preLVariant).build();
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .addVariant(preLVariant)
+            .build();
 
     Path apksArchiveFile =
         createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
@@ -760,19 +825,19 @@ public final class GetSizeCommandTest {
                     ApkTargeting.getDefaultInstance(), ZipPath.create("base-master.apk"))),
             createSplitApkSet(
                 /* moduleName= */ "feature1",
-                /* onDemand= */ true,
+                DeliveryType.ON_DEMAND,
                 /* moduleDependencies= */ ImmutableList.of(),
                 createMasterApkDescription(
                     ApkTargeting.getDefaultInstance(), ZipPath.create("base-feature1.apk"))),
             createSplitApkSet(
                 /* moduleName= */ "feature2",
-                /* onDemand= */ true,
+                DeliveryType.ON_DEMAND,
                 /* moduleDependencies= */ ImmutableList.of("feature3"),
                 createMasterApkDescription(
                     ApkTargeting.getDefaultInstance(), ZipPath.create("base-feature2.apk"))),
             createSplitApkSet(
                 /* moduleName= */ "feature3",
-                /* onDemand= */ true,
+                DeliveryType.ON_DEMAND,
                 /* moduleDependencies= */ ImmutableList.of(),
                 createMasterApkDescription(
                     ApkTargeting.getDefaultInstance(), ZipPath.create("base-feature3.apk"))));
@@ -785,7 +850,13 @@ public final class GetSizeCommandTest {
             ZipPath.create("preL.apk"));
 
     BuildApksResult tableOfContentsProto =
-        BuildApksResult.newBuilder().addVariant(lVariant).addVariant(preLVariant).build();
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .addVariant(preLVariant)
+            .build();
     Path apksArchiveFile =
         createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
 
@@ -837,6 +908,9 @@ public final class GetSizeCommandTest {
 
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(lInstantVariant)
             .addVariant(lSplitVariant)
             .addVariant(preLVariant)
@@ -881,7 +955,12 @@ public final class GetSizeCommandTest {
                     /* isMasterSplit= */ false)));
 
     BuildApksResult tableOfContentsProto =
-        BuildApksResult.newBuilder().addVariant(lVariant).build();
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .build();
     Path apksArchiveFile =
         createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
 
@@ -942,7 +1021,13 @@ public final class GetSizeCommandTest {
             ZipPath.create("preL.apk"));
 
     BuildApksResult tableOfContentsProto =
-        BuildApksResult.newBuilder().addVariant(lVariant).addVariant(preLVariant).build();
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(lVariant)
+            .addVariant(preLVariant)
+            .build();
     Path apksArchiveFile =
         createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
 

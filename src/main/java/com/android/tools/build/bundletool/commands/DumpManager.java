@@ -22,10 +22,12 @@ import com.android.aapt.ConfigurationOuterClass.Configuration;
 import com.android.aapt.Resources.ConfigValue;
 import com.android.aapt.Resources.ResourceTable;
 import com.android.aapt.Resources.XmlNode;
+import com.android.bundle.Config.BundleConfig;
 import com.android.tools.build.bundletool.model.BundleModule.SpecialModuleEntry;
 import com.android.tools.build.bundletool.model.BundleModuleName;
 import com.android.tools.build.bundletool.model.ResourceTableEntry;
 import com.android.tools.build.bundletool.model.ZipPath;
+import com.android.tools.build.bundletool.model.exceptions.BundleInvalidZipException;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
 import com.android.tools.build.bundletool.model.utils.ResourcesUtils;
 import com.android.tools.build.bundletool.model.utils.ZipUtils;
@@ -38,6 +40,7 @@ import com.android.tools.build.bundletool.xml.XmlProtoToXmlConverter;
 import com.android.tools.build.bundletool.xml.XmlUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.protobuf.util.JsonFormat;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -47,6 +50,7 @@ import java.nio.file.Path;
 import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 import javax.xml.xpath.XPath;
 import javax.xml.xpath.XPathExpression;
@@ -119,6 +123,16 @@ final class DumpManager {
     }
   }
 
+  void printBundleConfig() {
+    try (ZipFile zipFile = new ZipFile(bundlePath.toFile())) {
+      BundleConfig bundleConfig =
+          extractAndParse(zipFile, ZipPath.create("BundleConfig.pb"), BundleConfig::parseFrom);
+      printStream.println(JsonFormat.printer().print(bundleConfig));
+    } catch (IOException e) {
+      throw new ValidationException("Error occurred when reading the bundle.", e);
+    }
+  }
+
   private void printEntry(ResourceTableEntry entry, boolean printValues) {
     printStream.printf(
         "0x%08x - %s/%s%n",
@@ -147,6 +161,8 @@ final class DumpManager {
       Path bundlePath, ZipPath filePath, ProtoParser<T> protoParser) {
     try (ZipFile zipFile = new ZipFile(bundlePath.toFile())) {
       return extractAndParse(zipFile, filePath, protoParser);
+    } catch (ZipException e) {
+      throw new BundleInvalidZipException(e);
     } catch (IOException e) {
       throw new UncheckedIOException("Error occurred when trying to open the bundle.", e);
     }

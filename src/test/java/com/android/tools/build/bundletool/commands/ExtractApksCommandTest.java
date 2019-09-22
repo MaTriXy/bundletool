@@ -32,16 +32,19 @@ import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.crea
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createVariant;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createVariantForSingleSplitApk;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.multiAbiTargetingApexVariant;
+import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.splitApkDescription;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.abis;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.createDeviceSpecFile;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.density;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceFeatures;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceWithSdk;
+import static com.android.tools.build.bundletool.testing.DeviceFactory.lDeviceWithLocales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.locales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.mergeSpecs;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkVersion;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAbiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDensityTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeModuleTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleFeatureTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleMinSdkVersionTargeting;
@@ -53,7 +56,11 @@ import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.android.bundle.Commands.AssetModuleMetadata;
+import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.DeliveryType;
+import com.android.bundle.Config.Bundletool;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.ApkTargeting;
@@ -66,6 +73,7 @@ import com.android.tools.build.bundletool.flags.FlagParser;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -153,23 +161,19 @@ public class ExtractApksCommandTest {
   }
 
   @Test
-  public void nonExistentOutputDirectory_throws() throws Exception {
-    Path apksArchiveFile = createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"));
-    Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(21), tmpDir.resolve("device.json"));
+  public void outputDirectoryCreatedIfDoesNotExist() throws Exception {
+    Path apksArchivePath = createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"));
+    DeviceSpec deviceSpec = deviceWithSdk(21);
 
-    Throwable exception =
-        assertThrows(
-            IllegalArgumentException.class,
-            () ->
-                ExtractApksCommand.fromFlags(
-                        new FlagParser()
-                            .parse(
-                                "--device-spec=" + deviceSpecFile,
-                                "--apks=" + apksArchiveFile,
-                                "--output-dir=doesnt-exist"))
-                    .execute());
+    Path outputDirectory = tmpDir.resolve("directory-that-does-not-exist");
+    ExtractApksCommand.builder()
+        .setApksArchivePath(apksArchivePath)
+        .setDeviceSpec(deviceSpec)
+        .setOutputDirectory(outputDirectory)
+        .build()
+        .execute();
 
-    assertThat(exception).hasMessageThat().contains("Directory 'doesnt-exist' was not found");
+    assertThat(Files.exists(outputDirectory)).isTrue();
   }
 
   @Test
@@ -198,6 +202,9 @@ public class ExtractApksCommandTest {
     ZipPath apkLBase = ZipPath.create("apkL-base.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     VariantTargeting.getDefaultInstance(),
@@ -280,7 +287,26 @@ public class ExtractApksCommandTest {
   }
 
   @Test
-  public void builderAndFlagsConstruction_equivalent() throws Exception {
+  public void deviceSpecViaJavaApi_invalid_throws() throws Exception {
+    DeviceSpec invalidDeviceSpec = deviceWithSdk(-1);
+    BuildApksResult tableOfContentsProto = minimalApkSet();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+
+    Throwable exception =
+        assertThrows(
+            ValidationException.class,
+            () ->
+                ExtractApksCommand.builder()
+                    .setApksArchivePath(apksArchiveFile)
+                    .setDeviceSpec(invalidDeviceSpec)
+                    .build());
+
+    assertThat(exception).hasMessageThat().contains("Device spec SDK version");
+  }
+
+  @Test
+  public void builderAndFlagsConstruction_inJavaViaProtos_equivalent() throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
@@ -295,6 +321,26 @@ public class ExtractApksCommandTest {
         ExtractApksCommand.builder()
             .setApksArchivePath(apksArchiveFile)
             .setDeviceSpec(deviceSpec)
+            .build();
+
+    assertThat(fromFlags).isEqualTo(fromBuilderApi);
+  }
+
+  @Test
+  public void builderAndFlagsConstruction_inJavaViaFiles_equivalent() throws Exception {
+    Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(21), tmpDir.resolve("device.json"));
+    BuildApksResult tableOfContentsProto = minimalApkSet();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+
+    ExtractApksCommand fromFlags =
+        ExtractApksCommand.fromFlags(
+            new FlagParser().parse("--device-spec=" + deviceSpecFile, "--apks=" + apksArchiveFile));
+
+    ExtractApksCommand fromBuilderApi =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpecFile)
             .build();
 
     assertThat(fromFlags).isEqualTo(fromBuilderApi);
@@ -413,6 +459,9 @@ public class ExtractApksCommandTest {
     ZipPath apkOne = ZipPath.create("apk_one.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariantForSingleSplitApk(
                     variantSdkTargeting(sdkVersionFrom(21)),
@@ -449,6 +498,9 @@ public class ExtractApksCommandTest {
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariantForSingleSplitApk(
                     variantSdkTargeting(
@@ -501,6 +553,9 @@ public class ExtractApksCommandTest {
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariantForSingleSplitApk(
                     variantSdkTargeting(
@@ -554,6 +609,9 @@ public class ExtractApksCommandTest {
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariantForSingleSplitApk(
                     variantSdkTargeting(
@@ -601,6 +659,9 @@ public class ExtractApksCommandTest {
   public void apexModule_noMatch() throws Exception {
     BuildApksResult buildApksResult =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 multiAbiTargetingApexVariant(
                     multiAbiTargeting(X86_64), ZipPath.create("standalones/standalone-x86_64.apk")))
@@ -642,6 +703,9 @@ public class ExtractApksCommandTest {
 
     BuildApksResult buildApksResult =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(multiAbiTargetingApexVariant(x64Targeting, x64Apk))
             .addVariant(multiAbiTargetingApexVariant(x64X86Targeting, x64X86Apk))
             .addVariant(multiAbiTargetingApexVariant(x64ArmTargeting, x64ArmApk))
@@ -674,6 +738,9 @@ public class ExtractApksCommandTest {
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariantForSingleSplitApk(
                     variantSdkTargeting(sdkVersionFrom(21), ImmutableSet.of(sdkVersionFrom(23))),
@@ -708,6 +775,9 @@ public class ExtractApksCommandTest {
     ZipPath apkLx86 = ZipPath.create("splits/apkL-x86.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(sdkVersionFrom(21)),
@@ -744,6 +814,9 @@ public class ExtractApksCommandTest {
     ZipPath apkOne = ZipPath.create("apk_one.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariantForSingleSplitApk(
                     variantSdkTargeting(sdkVersionFrom(21)),
@@ -781,6 +854,9 @@ public class ExtractApksCommandTest {
     ZipPath apkLOther = ZipPath.create("apkL-other.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -795,12 +871,12 @@ public class ExtractApksCommandTest {
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkLBase)),
                     createSplitApkSet(
                         "feature",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkLFeature)),
                     createSplitApkSet(
                         "other",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkLOther))))
             .build();
@@ -833,6 +909,9 @@ public class ExtractApksCommandTest {
     ZipPath apkFeature3 = ZipPath.create("feature3-master.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -842,17 +921,17 @@ public class ExtractApksCommandTest {
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase)),
                     createSplitApkSet(
                         /* moduleName= */ "feature1",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature1)),
                     createSplitApkSet(
                         /* moduleName= */ "feature2",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature1"),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature2)),
                     createSplitApkSet(
                         /* moduleName= */ "feature3",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature2"),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(), apkFeature3))))
@@ -890,6 +969,9 @@ public class ExtractApksCommandTest {
     ZipPath apkFeature4 = ZipPath.create("feature4-master.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -899,22 +981,22 @@ public class ExtractApksCommandTest {
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase)),
                     createSplitApkSet(
                         /* moduleName= */ "feature1",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature1)),
                     createSplitApkSet(
                         /* moduleName= */ "feature2",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature1"),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature2)),
                     createSplitApkSet(
                         /* moduleName= */ "feature3",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature1"),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature3)),
                     createSplitApkSet(
                         /* moduleName= */ "feature4",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature2", "feature3"),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(), apkFeature4))))
@@ -952,6 +1034,9 @@ public class ExtractApksCommandTest {
     ZipPath apkFeature2 = ZipPath.create("feature2-master.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -961,12 +1046,12 @@ public class ExtractApksCommandTest {
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase)),
                     createSplitApkSet(
                         /* moduleName= */ "feature1",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature1)),
                     createSplitApkSet(
                         /* moduleName= */ "feature2",
-                        /* onDemand= */ false,
+                        DeliveryType.INSTALL_TIME,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(), apkFeature2))))
@@ -1005,6 +1090,9 @@ public class ExtractApksCommandTest {
     Path apkLBase = ZipPath.create("apkL-base.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -1039,6 +1127,9 @@ public class ExtractApksCommandTest {
     ZipPath apkLOther = ZipPath.create("apkL-other.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -1081,6 +1172,9 @@ public class ExtractApksCommandTest {
   public void extractApks_aboveMaxSdk_throws() throws Exception {
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -1118,6 +1212,9 @@ public class ExtractApksCommandTest {
     Path apkLOther = ZipPath.create("apkL-other.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -1160,6 +1257,9 @@ public class ExtractApksCommandTest {
     ZipPath apkOther = ZipPath.create("apkL-other.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -1202,6 +1302,9 @@ public class ExtractApksCommandTest {
     Path apkInstant2 = ZipPath.create("apkL-instant2.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(
@@ -1243,7 +1346,7 @@ public class ExtractApksCommandTest {
             () ->
                 ExtractApksCommand.builder()
                     .setApksArchivePath(tmpDir)
-                    .setDeviceSpec(DeviceSpec.getDefaultInstance())
+                    .setDeviceSpec(deviceWithSdk(21))
                     .build()
                     .execute());
 
@@ -1262,6 +1365,8 @@ public class ExtractApksCommandTest {
 
   private static BuildApksResult minimalApkSet() {
     return BuildApksResult.newBuilder()
+        .setBundletool(
+            Bundletool.newBuilder().setVersion(BundleToolVersion.getCurrentVersion().toString()))
         .addVariant(
             createVariant(
                 VariantTargeting.getDefaultInstance(),

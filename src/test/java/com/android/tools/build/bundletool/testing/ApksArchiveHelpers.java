@@ -27,6 +27,7 @@ import com.android.bundle.Commands.ApexApkMetadata;
 import com.android.bundle.Commands.ApkDescription;
 import com.android.bundle.Commands.ApkSet;
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.DeliveryType;
 import com.android.bundle.Commands.ModuleMetadata;
 import com.android.bundle.Commands.SplitApkMetadata;
 import com.android.bundle.Commands.StandaloneApkMetadata;
@@ -39,10 +40,13 @@ import com.android.bundle.Targeting.MultiAbiTargeting;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.io.ZipBuilder;
 import com.android.tools.build.bundletool.model.ZipPath;
+import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableList;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.stream.Stream;
 
 /** Helpers related to creating APKs archives in tests. */
 public final class ApksArchiveHelpers {
@@ -52,9 +56,7 @@ public final class ApksArchiveHelpers {
   public static Path createApksArchiveFile(BuildApksResult result, Path location) throws Exception {
     ZipBuilder archiveBuilder = new ZipBuilder();
 
-    result.getVariantList().stream()
-        .flatMap(variant -> variant.getApkSetList().stream())
-        .flatMap(apkSet -> apkSet.getApkDescriptionList().stream())
+    apkDescriptionStream(result)
         .forEach(
             apkDesc ->
                 archiveBuilder.addFileWithContent(ZipPath.create(apkDesc.getPath()), DUMMY_BYTES));
@@ -65,10 +67,7 @@ public final class ApksArchiveHelpers {
 
   public static Path createApksDirectory(BuildApksResult result, Path location) throws Exception {
     ImmutableList<ApkDescription> apkDescriptions =
-        result.getVariantList().stream()
-            .flatMap(variant -> variant.getApkSetList().stream())
-            .flatMap(apkSet -> apkSet.getApkDescriptionList().stream())
-            .collect(toImmutableList());
+        apkDescriptionStream(result).collect(toImmutableList());
 
     for (ApkDescription apkDescription : apkDescriptions) {
       Path apkPath = location.resolve(apkDescription.getPath());
@@ -100,7 +99,10 @@ public final class ApksArchiveHelpers {
     return createVariant(
         variantTargeting,
         ApkSet.newBuilder()
-            .setModuleMetadata(ModuleMetadata.newBuilder().setName("base"))
+            .setModuleMetadata(
+                ModuleMetadata.newBuilder()
+                    .setName("base")
+                    .setDeliveryType(DeliveryType.INSTALL_TIME))
             .addApkDescription(
                 ApkDescription.newBuilder()
                     .setTargeting(apkTargeting)
@@ -117,7 +119,10 @@ public final class ApksArchiveHelpers {
     return createVariant(
         variantTargeting,
         ApkSet.newBuilder()
-            .setModuleMetadata(ModuleMetadata.newBuilder().setName("base"))
+            .setModuleMetadata(
+                ModuleMetadata.newBuilder()
+                    .setName("base")
+                    .setDeliveryType(DeliveryType.INSTALL_TIME))
             .addApkDescription(
                 ApkDescription.newBuilder()
                     .setTargeting(apkTargeting)
@@ -140,22 +145,25 @@ public final class ApksArchiveHelpers {
   public static ApkSet createSplitApkSet(String moduleName, ApkDescription... apkDescription) {
     return createSplitApkSet(
         moduleName,
-        /* onDemand= */ false,
+        DeliveryType.INSTALL_TIME,
         /* moduleDependencies= */ ImmutableList.of(),
         apkDescription);
   }
 
   public static ApkSet createSplitApkSet(
       String moduleName,
-      boolean onDemand,
+      DeliveryType deliveryType,
       ImmutableList<String> moduleDependencies,
       ApkDescription... apkDescription) {
+    ModuleMetadata.Builder moduleMetadata =
+        ModuleMetadata.newBuilder().setName(moduleName).addAllDependencies(moduleDependencies);
+    if (BundleToolVersion.getCurrentVersion().isNewerThan(Version.of("0.10.1"))) {
+      moduleMetadata.setDeliveryType(deliveryType);
+    } else {
+      moduleMetadata.setOnDemandDeprecated(deliveryType != DeliveryType.INSTALL_TIME);
+    }
     return ApkSet.newBuilder()
-        .setModuleMetadata(
-            ModuleMetadata.newBuilder()
-                .setName(moduleName)
-                .setOnDemand(onDemand)
-                .addAllDependencies(moduleDependencies))
+        .setModuleMetadata(moduleMetadata)
         .addAllApkDescription(Arrays.asList(apkDescription))
         .build();
   }
@@ -167,7 +175,7 @@ public final class ApksArchiveHelpers {
             ModuleMetadata.newBuilder()
                 .setName(moduleName)
                 .setTargeting(moduleTargeting)
-                .setOnDemand(false))
+                .setDeliveryType(DeliveryType.INSTALL_TIME))
         .addAllApkDescription(Arrays.asList(apkDescriptions))
         .build();
   }
@@ -210,7 +218,11 @@ public final class ApksArchiveHelpers {
   public static ApkSet createInstantApkSet(
       String moduleName, ApkTargeting apkTargeting, Path apkPath) {
     return ApkSet.newBuilder()
-        .setModuleMetadata(ModuleMetadata.newBuilder().setName(moduleName).setIsInstant(true))
+        .setModuleMetadata(
+            ModuleMetadata.newBuilder()
+                .setName(moduleName)
+                .setIsInstant(true)
+                .setDeliveryType(DeliveryType.INSTALL_TIME))
         .addApkDescription(
             ApkDescription.newBuilder()
                 .setPath(apkPath.toString())
@@ -222,7 +234,8 @@ public final class ApksArchiveHelpers {
   public static ApkSet createStandaloneApkSet(ApkTargeting apkTargeting, Path apkPath) {
     // Note: Standalone APK is represented as a module named "base".
     return ApkSet.newBuilder()
-        .setModuleMetadata(ModuleMetadata.newBuilder().setName("base"))
+        .setModuleMetadata(
+            ModuleMetadata.newBuilder().setName("base").setDeliveryType(DeliveryType.INSTALL_TIME))
         .addApkDescription(
             ApkDescription.newBuilder()
                 .setPath(apkPath.toString())
@@ -235,7 +248,8 @@ public final class ApksArchiveHelpers {
   public static ApkSet createSystemApkSet(ApkTargeting apkTargeting, Path apkPath) {
     // Note: System APK is represented as a module named "base".
     return ApkSet.newBuilder()
-        .setModuleMetadata(ModuleMetadata.newBuilder().setName("base"))
+        .setModuleMetadata(
+            ModuleMetadata.newBuilder().setName("base").setDeliveryType(DeliveryType.INSTALL_TIME))
         .addApkDescription(
             ApkDescription.newBuilder()
                 .setPath(apkPath.toString())
@@ -245,5 +259,14 @@ public final class ApksArchiveHelpers {
                         .addFusedModuleName("base")
                         .setSystemApkType(SystemApkType.SYSTEM)))
         .build();
+  }
+
+  private static Stream<ApkDescription> apkDescriptionStream(BuildApksResult buildApksResult) {
+    return Stream.concat(
+        buildApksResult.getVariantList().stream()
+            .flatMap(variant -> variant.getApkSetList().stream())
+            .flatMap(apkSet -> apkSet.getApkDescriptionList().stream()),
+        buildApksResult.getAssetSliceSetList().stream()
+            .flatMap(assetSliceSet -> assetSliceSet.getApkDescriptionList().stream()));
   }
 }

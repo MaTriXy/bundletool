@@ -93,6 +93,7 @@ import com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionF
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.model.BundleMetadata;
 import com.android.tools.build.bundletool.model.BundleModule;
+import com.android.tools.build.bundletool.model.BundleModuleName;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
@@ -159,6 +160,10 @@ public class BundleSharderTest {
       apkDensityTargeting(
           DensityAlias.XXXHDPI,
           Sets.difference(ALL_DENSITIES, ImmutableSet.of(DensityAlias.XXXHDPI)));
+
+  private static final BundleModuleName BASE_MODULE_NAME = BundleModuleName.create("base");
+  private static final BundleModuleName FEATURE_MODULE_NAME = BundleModuleName.create("feature");
+  private static final BundleModuleName VR_MODULE_NAME = BundleModuleName.create("vr");
 
   private BundleSharder bundleSharder;
   private Path tmpDir;
@@ -319,10 +324,11 @@ public class BundleSharderTest {
     if (deviceSpec.isPresent()) {
       ShardedSystemSplits shardedSystemSplits =
           bundleSharder.shardForSystemApps(
-              ImmutableList.of(bundleModule),
+              /* modules= */ ImmutableList.of(bundleModule),
+              /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
               ImmutableSet.of(OptimizationDimension.ABI),
               DEFAULT_METADATA);
-      assertThat(shardedSystemSplits.getAdditionalLanguageSplits()).isEmpty();
+      assertThat(shardedSystemSplits.getAdditionalSplits()).isEmpty();
       shards = ImmutableList.of(shardedSystemSplits.getSystemImageSplit());
     } else {
       shards =
@@ -387,10 +393,11 @@ public class BundleSharderTest {
     if (deviceSpec.isPresent()) {
       ShardedSystemSplits shardedSystemSplits =
           bundleSharder.shardForSystemApps(
-              ImmutableList.of(bundleModule),
+              /* modules= */ ImmutableList.of(bundleModule),
+              /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
               ImmutableSet.of(OptimizationDimension.ABI),
               DEFAULT_METADATA);
-      assertThat(shardedSystemSplits.getAdditionalLanguageSplits()).isEmpty();
+      assertThat(shardedSystemSplits.getAdditionalSplits()).isEmpty();
       shards = ImmutableList.of(shardedSystemSplits.getSystemImageSplit());
     } else {
       shards =
@@ -465,7 +472,7 @@ public class BundleSharderTest {
         .containsExactly(VariantTargeting.getDefaultInstance());
     for (ModuleSplit shard : shards) {
       assertThat(extractPaths(shard.getEntries()))
-          .containsAllOf(
+          .containsAtLeast(
               "assets/file.txt",
               "dex/classes.dex",
               "res/drawable/image.jpg",
@@ -539,7 +546,8 @@ public class BundleSharderTest {
 
     ShardedSystemSplits shards =
         bundleSharder.shardForSystemApps(
-            ImmutableList.of(bundleModule),
+            /* modules= */ ImmutableList.of(bundleModule),
+            /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
             ImmutableSet.of(OptimizationDimension.ABI),
             DEFAULT_METADATA);
 
@@ -556,7 +564,7 @@ public class BundleSharderTest {
             "res/drawable/image.jpg",
             "res/drawable-mdpi/image.jpg",
             "root/license.dat");
-    assertThat(shards.getAdditionalLanguageSplits()).isEmpty();
+    assertThat(shards.getAdditionalSplits()).isEmpty();
   }
 
   @Test
@@ -612,7 +620,8 @@ public class BundleSharderTest {
 
     ShardedSystemSplits shards =
         bundleSharder.shardForSystemApps(
-            ImmutableList.of(baseModule, vrModule),
+            /* modules= */ ImmutableList.of(baseModule, vrModule),
+            /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME, VR_MODULE_NAME),
             ImmutableSet.of(
                 OptimizationDimension.ABI,
                 OptimizationDimension.LANGUAGE,
@@ -626,7 +635,7 @@ public class BundleSharderTest {
         .containsExactly(
             "assets/vr/languages#lang_es/image.jpg", "assets/languages#lang_es/image.jpg");
 
-    ImmutableList<ModuleSplit> langSplits = shards.getAdditionalLanguageSplits();
+    ImmutableList<ModuleSplit> langSplits = shards.getAdditionalSplits();
     assertThat(langSplits).hasSize(2);
     ImmutableMap<String, ModuleSplit> langSplitsNameMap =
         Maps.uniqueIndex(langSplits, split -> split.getModuleName().getName());
@@ -675,7 +684,7 @@ public class BundleSharderTest {
     assertThat(shard.getSplitType()).isEqualTo(SplitType.STANDALONE);
     assertThat(shard.getVariantTargeting()).isEqualToDefaultInstance();
     assertThat(extractPaths(shard.getEntries()))
-        .containsAllOf("dex/classes.dex", "lib/x86/libtest.so");
+        .containsAtLeast("dex/classes.dex", "lib/x86/libtest.so");
     assertThat(shard.getApkTargeting()).isEqualTo(apkAbiTargeting(X86));
   }
 
@@ -916,7 +925,7 @@ public class BundleSharderTest {
     assertThat(shards).hasSize(1);
     ModuleSplit shard = shards.get(0);
     assertThat(extractPaths(shard.getEntries()))
-        .containsAllOf(
+        .containsAtLeast(
             "assets/file.txt",
             "dex/classes.dex",
             "lib/x86/libtest.so",
@@ -953,10 +962,11 @@ public class BundleSharderTest {
     if (deviceSpec.isPresent()) {
       ShardedSystemSplits shardedSystemSplits =
           bundleSharder.shardForSystemApps(
-              ImmutableList.of(bundleModule),
+              /* modules= */ ImmutableList.of(bundleModule),
+              /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
               ImmutableSet.of(OptimizationDimension.ABI, OptimizationDimension.SCREEN_DENSITY),
               DEFAULT_METADATA);
-      assertThat(shardedSystemSplits.getAdditionalLanguageSplits()).isEmpty();
+      assertThat(shardedSystemSplits.getAdditionalSplits()).isEmpty();
       shards = ImmutableList.of(shardedSystemSplits.getSystemImageSplit());
     } else {
       shards =
@@ -1023,7 +1033,7 @@ public class BundleSharderTest {
 
     for (ModuleSplit shard : shards) {
       assertThat(extractPaths(shard.getEntries()))
-          .containsAllOf(
+          .containsAtLeast(
               "assets/file.txt", "dex/classes.dex", "lib/x86/libtest.so", "root/license.dat");
       // The MDPI shard(s) would match both hdpi and ldpi variant of the resource.
       if (shard
@@ -1095,11 +1105,12 @@ public class BundleSharderTest {
 
     ShardedSystemSplits shards =
         bundleSharder.shardForSystemApps(
-            ImmutableList.of(bundleModule),
+            /* modules= */ ImmutableList.of(bundleModule),
+            /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
             ImmutableSet.of(OptimizationDimension.ABI, OptimizationDimension.SCREEN_DENSITY),
             DEFAULT_METADATA);
 
-    assertThat(shards.getAdditionalLanguageSplits()).isEmpty();
+    assertThat(shards.getAdditionalSplits()).isEmpty();
 
     // 1 shards: {x86} x {MDPI}.
     ModuleSplit fatShard = shards.getSystemImageSplit();
@@ -1168,7 +1179,8 @@ public class BundleSharderTest {
 
     ShardedSystemSplits shards =
         bundleSharder.shardForSystemApps(
-            ImmutableList.of(bundleModule),
+            /* modules= */ ImmutableList.of(bundleModule),
+            /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
             ImmutableSet.of(
                 OptimizationDimension.ABI,
                 OptimizationDimension.SCREEN_DENSITY,
@@ -1196,7 +1208,7 @@ public class BundleSharderTest {
             "root/license.dat",
             "assets/languages#lang_fr/image.jpg");
 
-    ModuleSplit esLangShard = Iterables.getOnlyElement(shards.getAdditionalLanguageSplits());
+    ModuleSplit esLangShard = Iterables.getOnlyElement(shards.getAdditionalSplits());
 
     assertThat(esLangShard.getApkTargeting()).isEqualTo(apkLanguageTargeting("es"));
     assertThat(esLangShard.getSplitType()).isEqualTo(SplitType.SPLIT);
@@ -1261,7 +1273,8 @@ public class BundleSharderTest {
 
     ShardedSystemSplits shards =
         bundleSharder.shardForSystemApps(
-            ImmutableList.of(bundleModule),
+            /* modules= */ ImmutableList.of(bundleModule),
+            /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
             ImmutableSet.of(
                 OptimizationDimension.ABI,
                 OptimizationDimension.SCREEN_DENSITY,
@@ -1292,7 +1305,7 @@ public class BundleSharderTest {
 
     ImmutableMap<LanguageTargeting, ModuleSplit> splitLanguageTargetingMap =
         Maps.uniqueIndex(
-            shards.getAdditionalLanguageSplits(),
+            shards.getAdditionalSplits(),
             split -> split.getApkTargeting().getLanguageTargeting());
 
     assertThat(splitLanguageTargetingMap.keySet())
@@ -1402,7 +1415,7 @@ public class BundleSharderTest {
     // Check files not specific to ABI nor screen density.
     for (ModuleSplit shard : shards) {
       assertThat(extractPaths(shard.getEntries()))
-          .containsAllOf("assets/file.txt", "dex/classes.dex", "root/license.dat");
+          .containsAtLeast("assets/file.txt", "dex/classes.dex", "root/license.dat");
     }
 
     // Check resources.
@@ -1518,15 +1531,18 @@ public class BundleSharderTest {
                                 0x01,
                                 "image2",
                                 fileReference("res/drawable-ldpi/image2.jpg", LDPI))))))
-            .setManifest(androidManifest("com.test.app"))
+            .setManifest(androidManifestForFeature("com.test.app"))
             .build();
 
     ImmutableList<ModuleSplit> shards;
     if (deviceSpec.isPresent()) {
       ShardedSystemSplits shardedSystemSplits =
           bundleSharder.shardForSystemApps(
-              ImmutableList.of(baseModule, featureModule), ImmutableSet.of(), DEFAULT_METADATA);
-      assertThat(shardedSystemSplits.getAdditionalLanguageSplits()).isEmpty();
+              /* modules= */ ImmutableList.of(baseModule, featureModule),
+              /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME, FEATURE_MODULE_NAME),
+              ImmutableSet.of(),
+              DEFAULT_METADATA);
+      assertThat(shardedSystemSplits.getAdditionalSplits()).isEmpty();
       shards = ImmutableList.of(shardedSystemSplits.getSystemImageSplit());
 
     } else {
@@ -1709,7 +1725,7 @@ public class BundleSharderTest {
     BundleModule featureModule =
         new BundleModuleBuilder("feature")
             .addFile("res/drawable-hdpi/image2.jpg")
-            .setManifest(androidManifest("com.test.app"))
+            .setManifest(androidManifestForFeature("com.test.app"))
             .setResourceTable(
                 resourceTable(
                     pkg(
@@ -1728,10 +1744,11 @@ public class BundleSharderTest {
     if (deviceSpec.isPresent()) {
       ShardedSystemSplits shardedSystemSplits =
           bundleSharder.shardForSystemApps(
-              ImmutableList.of(baseModule, featureModule),
+              /* modules= */ ImmutableList.of(baseModule, featureModule),
+              /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME, FEATURE_MODULE_NAME),
               ImmutableSet.of(OptimizationDimension.SCREEN_DENSITY),
               DEFAULT_METADATA);
-      assertThat(shardedSystemSplits.getAdditionalLanguageSplits()).isEmpty();
+      assertThat(shardedSystemSplits.getAdditionalSplits()).isEmpty();
       shards = ImmutableList.of(shardedSystemSplits.getSystemImageSplit());
     } else {
       shards =
@@ -1857,7 +1874,7 @@ public class BundleSharderTest {
     // Check files not specific to ABI nor screen density.
     for (ModuleSplit shard : shards) {
       assertThat(extractPaths(shard.getEntries()))
-          .containsAllOf("assets/file.txt", "dex/classes.dex", "root/license.dat");
+          .containsAtLeast("assets/file.txt", "dex/classes.dex", "root/license.dat");
     }
 
     // Check resources.
@@ -1961,7 +1978,7 @@ public class BundleSharderTest {
         new BundleModuleBuilder("feature")
             .addFile("lib/armeabi/libtest.so")
             .addFile("lib/x86/libtest.so")
-            .setManifest(androidManifest("com.test.app"))
+            .setManifest(androidManifestForFeature("com.test.app"))
             .setNativeConfig(
                 nativeLibraries(
                     targetedNativeDirectory("lib/armeabi", nativeDirectoryTargeting(ARMEABI)),
@@ -1970,7 +1987,8 @@ public class BundleSharderTest {
 
     ShardedSystemSplits shards =
         bundleSharder.shardForSystemApps(
-            ImmutableList.of(baseModule, featureModule),
+            /* modules= */ ImmutableList.of(baseModule, featureModule),
+            /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME, FEATURE_MODULE_NAME),
             ImmutableSet.of(OptimizationDimension.ABI, OptimizationDimension.SCREEN_DENSITY),
             DEFAULT_METADATA);
 
@@ -1989,6 +2007,6 @@ public class BundleSharderTest {
             "lib/x86/libtest.so",
             "res/drawable/image.jpg",
             "root/license.dat");
-    assertThat(shards.getAdditionalLanguageSplits()).isEmpty();
+    assertThat(shards.getAdditionalSplits()).isEmpty();
   }
 }

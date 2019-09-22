@@ -26,6 +26,7 @@ import static com.android.tools.build.bundletool.testing.DeviceFactory.locales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.mergeSpecs;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForFeature;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.abiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAbiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
@@ -54,6 +55,7 @@ import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
 import com.android.tools.build.bundletool.model.BundleMetadata;
 import com.android.tools.build.bundletool.model.BundleModule;
+import com.android.tools.build.bundletool.model.BundleModuleName;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
@@ -86,6 +88,8 @@ public class ShardedApksGeneratorTest {
       ApkOptimizations.getDefaultOptimizationsForVersion(BUNDLETOOL_VERSION);
   private static final DeviceSpec DEVICE_SPEC =
       mergeSpecs(sdkVersion(28), abis("x86"), density(DensityAlias.MDPI), locales("en-US"));
+  private static final BundleModuleName BASE_MODULE_NAME = BundleModuleName.create("base");
+  private static final BundleModuleName VR_MODULE_NAME = BundleModuleName.create("vr");
 
   @Rule public final TemporaryFolder tmp = new TemporaryFolder();
   private Path tmpDir;
@@ -110,13 +114,18 @@ public class ShardedApksGeneratorTest {
                 .addFile("assets/leftover.txt")
                 .setManifest(androidManifest("com.test.app"))
                 .build(),
-            new BundleModuleBuilder("test")
+            new BundleModuleBuilder("vr")
                 .addFile("assets/test.txt")
-                .setManifest(androidManifest("com.test.app"))
+                .setManifest(androidManifestForFeature("com.test.app"))
                 .build());
 
     ImmutableList<ModuleSplit> moduleSplits =
-        generateModuleSplits(bundleModule, standaloneSplitType, /* generate64BitShards= */ true);
+        standaloneSplitType.equals(SplitType.STANDALONE)
+            ? generateModuleSplitsForStandalone(bundleModule, /* generate64BitShards= */ true)
+            : generateModuleSplitsForSystem(
+                bundleModule,
+                /* generate64BitShards= */ true,
+                ImmutableSet.of(BASE_MODULE_NAME, VR_MODULE_NAME));
 
     assertThat(moduleSplits).hasSize(1);
     ModuleSplit moduleSplit = moduleSplits.get(0);
@@ -158,12 +167,16 @@ public class ShardedApksGeneratorTest {
                 .setManifest(androidManifest("com.test.app"))
                 .build());
 
-    ImmutableList<ModuleSplit> moduleSplits =
-        generateModuleSplits(bundleModule, standaloneSplitType, /* generate64BitShards= */ true);
+    ImmutableList<ModuleSplit> moduleSplits;
 
     if (standaloneSplitType.equals(SplitType.SYSTEM)) {
+      moduleSplits =
+          generateModuleSplitsForSystem(
+              bundleModule, /* generate64BitShards= */ true, ImmutableSet.of(BASE_MODULE_NAME));
       assertThat(moduleSplits).hasSize(1); // x86, mdpi split
     } else {
+      moduleSplits =
+          generateModuleSplitsForStandalone(bundleModule, /* generate64BitShards= */ true);
       assertThat(moduleSplits).hasSize(14); // 7 (density), 2 (abi) splits
     }
     assertThat(moduleSplits.stream().map(ModuleSplit::getSplitType).collect(toImmutableSet()))
@@ -202,12 +215,16 @@ public class ShardedApksGeneratorTest {
                 .setManifest(androidManifest("com.test.app"))
                 .build());
 
-    ImmutableList<ModuleSplit> moduleSplits =
-        generateModuleSplits(bundleModule, standaloneSplitType, /* generate64BitShards= */ false);
+    ImmutableList<ModuleSplit> moduleSplits;
 
     if (standaloneSplitType.equals(SplitType.SYSTEM)) {
+      moduleSplits =
+          generateModuleSplitsForSystem(
+              bundleModule, /* generate64BitShards= */ false, ImmutableSet.of(BASE_MODULE_NAME));
       assertThat(moduleSplits).hasSize(1); // x86, mdpi split
     } else {
+      moduleSplits =
+          generateModuleSplitsForStandalone(bundleModule, /* generate64BitShards= */ false);
       assertThat(moduleSplits).hasSize(7); // 7 (density), 1 (abi) split
     }
     // Verify that the only ABI is x86.
@@ -266,7 +283,8 @@ public class ShardedApksGeneratorTest {
     ImmutableList<ModuleSplit> moduleSplits =
         new ShardedApksGenerator(tmpDir, BUNDLETOOL_VERSION, /* generate64BitShards= */ false)
             .generateSystemSplits(
-                bundleModule,
+                /* modules= */ bundleModule,
+                /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
                 DEFAULT_METADATA,
                 DEFAULT_APK_OPTIMIZATIONS,
                 Optional.of(
@@ -323,7 +341,8 @@ public class ShardedApksGeneratorTest {
     ImmutableList<ModuleSplit> moduleSplits =
         new ShardedApksGenerator(tmpDir, BUNDLETOOL_VERSION, /* generate64BitShards= */ true)
             .generateSystemSplits(
-                bundleModule,
+                /* modules= */ bundleModule,
+                /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME),
                 DEFAULT_METADATA,
                 DEFAULT_APK_OPTIMIZATIONS,
                 Optional.of(
@@ -402,13 +421,14 @@ public class ShardedApksGeneratorTest {
                         targetedAssetsDirectory(
                             "assets/vr/languages#lang_it",
                             assetsDirectoryTargeting(languageTargeting("it")))))
-                .setManifest(androidManifest("com.test.app"))
+                .setManifest(androidManifestForFeature("com.test.app"))
                 .build());
 
     ImmutableList<ModuleSplit> moduleSplits =
         new ShardedApksGenerator(tmpDir, BUNDLETOOL_VERSION, /* generate64BitShards= */ true)
             .generateSystemSplits(
-                bundleModule,
+                /* modules= */ bundleModule,
+                /* modulesToFuse= */ ImmutableSet.of(BASE_MODULE_NAME, VR_MODULE_NAME),
                 DEFAULT_METADATA,
                 DEFAULT_APK_OPTIMIZATIONS,
                 Optional.of(
@@ -455,19 +475,24 @@ public class ShardedApksGeneratorTest {
         .containsExactly("assets/vr/languages#lang_it/image.jpg");
   }
 
-  private ImmutableList<ModuleSplit> generateModuleSplits(
-      ImmutableList<BundleModule> bundleModule,
-      SplitType standaloneSplitType,
-      boolean generate64BitShards) {
-    if (standaloneSplitType.equals(SplitType.STANDALONE)) {
+  private ImmutableList<ModuleSplit> generateModuleSplitsForStandalone(
+      ImmutableList<BundleModule> bundleModule, boolean generate64BitShards) {
       return new ShardedApksGenerator(tmpDir, BUNDLETOOL_VERSION, generate64BitShards)
           .generateSplits(bundleModule, DEFAULT_METADATA, DEFAULT_APK_OPTIMIZATIONS);
-    } else {
-      return new ShardedApksGenerator(tmpDir, BUNDLETOOL_VERSION, generate64BitShards)
-          .generateSystemSplits(
-              bundleModule, DEFAULT_METADATA, DEFAULT_APK_OPTIMIZATIONS, Optional.of(DEVICE_SPEC));
-    }
   }
+
+  private ImmutableList<ModuleSplit> generateModuleSplitsForSystem(
+      ImmutableList<BundleModule> bundleModule,
+      boolean generate64BitShards,
+      ImmutableSet<BundleModuleName> moduleToFuse) {
+    return new ShardedApksGenerator(tmpDir, BUNDLETOOL_VERSION, generate64BitShards)
+        .generateSystemSplits(
+            /* modules= */ bundleModule,
+            /* modulesToFuse= */ moduleToFuse,
+            DEFAULT_METADATA,
+            DEFAULT_APK_OPTIMIZATIONS,
+            Optional.of(DEVICE_SPEC));
+    }
 
   private static ImmutableSet<String> getEntriesPaths(ModuleSplit moduleSplit) {
     return moduleSplit.getEntries().stream()

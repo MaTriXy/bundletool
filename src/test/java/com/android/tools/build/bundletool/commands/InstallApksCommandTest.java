@@ -23,6 +23,7 @@ import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.crea
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createSplitApkSet;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createVariant;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createVariantForSingleSplitApk;
+import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.splitApkDescription;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.abis;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.density;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.lDeviceWithLocales;
@@ -32,6 +33,7 @@ import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkVersio
 import static com.android.tools.build.bundletool.testing.FakeSystemEnvironmentProvider.ANDROID_HOME;
 import static com.android.tools.build.bundletool.testing.FakeSystemEnvironmentProvider.ANDROID_SERIAL;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAbiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersionFrom;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.variantSdkTargeting;
 import static com.android.tools.build.bundletool.testing.TestUtils.expectMissingRequiredBuilderPropertyException;
@@ -39,7 +41,11 @@ import static com.android.tools.build.bundletool.testing.TestUtils.expectMissing
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.android.bundle.Commands.AssetModuleMetadata;
+import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.DeliveryType;
+import com.android.bundle.Config.Bundletool;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.ApkTargeting;
@@ -52,6 +58,7 @@ import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.model.exceptions.InstallationException;
 import com.android.tools.build.bundletool.model.utils.SystemEnvironmentProvider;
+import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.android.tools.build.bundletool.testing.FakeAdbServer;
 import com.android.tools.build.bundletool.testing.FakeDevice;
 import com.android.tools.build.bundletool.testing.FakeSystemEnvironmentProvider;
@@ -401,6 +408,9 @@ public class InstallApksCommandTest {
     ZipPath apkLx86 = ZipPath.create("splits/apkL-x86.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     variantSdkTargeting(sdkVersionFrom(21)),
@@ -517,6 +527,9 @@ public class InstallApksCommandTest {
       @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
     BuildApksResult tableOfContent =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     VariantTargeting.getDefaultInstance(),
@@ -562,6 +575,9 @@ public class InstallApksCommandTest {
       @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
     BuildApksResult tableOfContent =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     VariantTargeting.getDefaultInstance(),
@@ -571,21 +587,21 @@ public class InstallApksCommandTest {
                             ApkTargeting.getDefaultInstance(), ZipPath.create("base-master.apk"))),
                     createSplitApkSet(
                         /* moduleName= */ "feature1",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(),
                             ZipPath.create("feature1-master.apk"))),
                     createSplitApkSet(
                         /* moduleName= */ "feature2",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature1"),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(),
                             ZipPath.create("feature2-master.apk"))),
                     createSplitApkSet(
                         /* moduleName= */ "feature3",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature2"),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(),
@@ -618,6 +634,9 @@ public class InstallApksCommandTest {
       @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
     BuildApksResult tableOfContent =
         BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addVariant(
                 createVariant(
                     VariantTargeting.getDefaultInstance(),
@@ -627,28 +646,28 @@ public class InstallApksCommandTest {
                             ApkTargeting.getDefaultInstance(), ZipPath.create("base-master.apk"))),
                     createSplitApkSet(
                         /* moduleName= */ "feature1",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of(),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(),
                             ZipPath.create("feature1-master.apk"))),
                     createSplitApkSet(
                         /* moduleName= */ "feature2",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature1"),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(),
                             ZipPath.create("feature2-master.apk"))),
                     createSplitApkSet(
                         /* moduleName= */ "feature3",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature1"),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(),
                             ZipPath.create("feature3-master.apk"))),
                     createSplitApkSet(
                         /* moduleName= */ "feature4",
-                        /* onDemand= */ true,
+                        DeliveryType.ON_DEMAND,
                         /* moduleDependencies= */ ImmutableList.of("feature2", "feature3"),
                         createMasterApkDescription(
                             ApkTargeting.getDefaultInstance(),
@@ -681,6 +700,84 @@ public class InstallApksCommandTest {
   }
 
   @Test
+  @Theory
+  public void extractAssetModules(@FromDataPoints("apksInDirectory") boolean apksInDirectory)
+      throws Exception {
+    String installTimeModule1 = "installtime_assetmodule1";
+    String installTimeModule2 = "installtime_assetmodule2";
+    String onDemandModule = "ondemand_assetmodule";
+    ZipPath installTimeMasterApk1 = ZipPath.create(installTimeModule1 + "-master.apk");
+    ZipPath installTimeEnApk1 = ZipPath.create(installTimeModule1 + "-en.apk");
+    ZipPath installTimeMasterApk2 = ZipPath.create(installTimeModule2 + "-master.apk");
+    ZipPath installTimeEnApk2 = ZipPath.create(installTimeModule2 + "-en.apk");
+    ZipPath onDemandMasterApk = ZipPath.create(onDemandModule + "-master.apk");
+    ZipPath baseApk = ZipPath.create("base-master.apk");
+    BuildApksResult tableOfContent =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    VariantTargeting.getDefaultInstance(),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), baseApk))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(installTimeModule1)
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        splitApkDescription(
+                            ApkTargeting.getDefaultInstance(), installTimeMasterApk1))
+                    .addApkDescription(
+                        splitApkDescription(apkLanguageTargeting("en"), installTimeEnApk1)))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(installTimeModule2)
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        splitApkDescription(
+                            ApkTargeting.getDefaultInstance(), installTimeMasterApk2))
+                    .addApkDescription(
+                        splitApkDescription(apkLanguageTargeting("en"), installTimeEnApk2)))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(onDemandModule)
+                            .setDeliveryType(DeliveryType.ON_DEMAND))
+                    .addApkDescription(
+                        splitApkDescription(ApkTargeting.getDefaultInstance(), onDemandMasterApk)))
+            .build();
+
+    Path apksFile = createApks(tableOfContent, apksInDirectory);
+
+    List<Path> installedApks = new ArrayList<>();
+    FakeDevice fakeDevice =
+        FakeDevice.fromDeviceSpec(DEVICE_ID, DeviceState.ONLINE, lDeviceWithLocales("en-US"));
+    AdbServer adbServer =
+        new FakeAdbServer(/* hasInitialDeviceList= */ true, ImmutableList.of(fakeDevice));
+    fakeDevice.setInstallApksSideEffect((apks, installOptions) -> installedApks.addAll(apks));
+
+    InstallApksCommand.builder()
+        .setApksArchivePath(apksFile)
+        .setAdbPath(adbPath)
+        .setAdbServer(adbServer)
+        .setModules(ImmutableSet.of(installTimeModule1))
+        .build()
+        .execute();
+
+    assertThat(Lists.transform(installedApks, apkPath -> apkPath.getFileName().toString()))
+        .containsExactly(
+            baseApk.toString(), installTimeMasterApk1.toString(), installTimeEnApk1.toString());
+  }
+
+  @Test
   public void printHelp_doesNotCrash() {
     GetDeviceSpecCommand.help();
   }
@@ -694,6 +791,8 @@ public class InstallApksCommandTest {
   /** Creates a table of content matching L+ devices. */
   private static BuildApksResult createLPlusTableOfContent(ZipPath apkPath) {
     return BuildApksResult.newBuilder()
+        .setBundletool(
+            Bundletool.newBuilder().setVersion(BundleToolVersion.getCurrentVersion().toString()))
         .addVariant(
             createVariantForSingleSplitApk(
                 variantSdkTargeting(sdkVersionFrom(21)),
@@ -705,6 +804,8 @@ public class InstallApksCommandTest {
   /** Creates a table of content matching all devices to a given apkPath. */
   private static BuildApksResult createSimpleTableOfContent(ZipPath apkPath) {
     return BuildApksResult.newBuilder()
+        .setBundletool(
+            Bundletool.newBuilder().setVersion(BundleToolVersion.getCurrentVersion().toString()))
         .addVariant(
             createVariantForSingleSplitApk(
                 VariantTargeting.getDefaultInstance(), ApkTargeting.getDefaultInstance(), apkPath))

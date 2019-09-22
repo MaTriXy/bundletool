@@ -19,6 +19,8 @@ package com.android.tools.build.bundletool.model;
 import static com.android.tools.build.bundletool.model.AndroidManifest.ACTIVITY_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.HAS_CODE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.IS_FEATURE_SPLIT_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.IS_SPLIT_REQUIRED_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.IS_SPLIT_REQUIRED_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.MAX_SDK_VERSION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.MIN_SDK_VERSION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_ATTRIBUTE_NAME;
@@ -28,6 +30,7 @@ import static com.android.tools.build.bundletool.model.AndroidManifest.SERVICE_E
 import static com.android.tools.build.bundletool.model.AndroidManifest.SPLIT_NAME_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.SPLIT_NAME_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.TARGET_SANDBOX_VERSION_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.TARGET_SDK_VERSION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VALUE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_CODE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
@@ -142,6 +145,40 @@ public class ManifestEditorTest {
                         ANDROID_NAMESPACE_URI,
                         "minSdkVersion",
                         MIN_SDK_VERSION_RESOURCE_ID,
+                        123))));
+  }
+
+  @Test
+  public void setTargetSdkVersion_existingAttribute_adjusted() throws Exception {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlNode(
+                        xmlElement(
+                            "uses-sdk",
+                            xmlDecimalIntegerAttribute(
+                                ANDROID_NAMESPACE_URI,
+                                "targetSdkVersion",
+                                TARGET_SDK_VERSION_RESOURCE_ID,
+                                1))))));
+
+    AndroidManifest editedManifest = androidManifest.toEditor().setTargetSdkVersion(123).save();
+
+    XmlNode editedManifestRoot = editedManifest.getManifestRoot().getProto();
+    assertThat(editedManifestRoot.hasElement()).isTrue();
+    XmlElement manifestElement = editedManifestRoot.getElement();
+    assertThat(manifestElement.getName()).isEqualTo("manifest");
+    assertThat(manifestElement.getChildList())
+        .containsExactly(
+            xmlNode(
+                xmlElement(
+                    "uses-sdk",
+                    xmlDecimalIntegerAttribute(
+                        ANDROID_NAMESPACE_URI,
+                        "targetSdkVersion",
+                        TARGET_SDK_VERSION_RESOURCE_ID,
                         123))));
   }
 
@@ -463,6 +500,13 @@ public class ManifestEditorTest {
         editedManifest,
         "com.android.vending.splits.required",
         xmlBooleanAttribute(ANDROID_NAMESPACE_URI, "value", VALUE_RESOURCE_ID, true));
+    assertThat(getApplicationElement(editedManifest).getAttributeList())
+        .containsExactly(
+            xmlBooleanAttribute(
+                ANDROID_NAMESPACE_URI,
+                IS_SPLIT_REQUIRED_ATTRIBUTE_NAME,
+                IS_SPLIT_REQUIRED_RESOURCE_ID,
+                true));
   }
 
   @Test
@@ -477,6 +521,13 @@ public class ManifestEditorTest {
         editedManifest,
         "com.android.vending.splits.required",
         xmlBooleanAttribute(ANDROID_NAMESPACE_URI, "value", VALUE_RESOURCE_ID, true));
+    assertThat(getApplicationElement(editedManifest).getAttributeList())
+        .containsExactly(
+            xmlBooleanAttribute(
+                ANDROID_NAMESPACE_URI,
+                IS_SPLIT_REQUIRED_ATTRIBUTE_NAME,
+                IS_SPLIT_REQUIRED_RESOURCE_ID,
+                true));
   }
 
   @Test
@@ -491,6 +542,13 @@ public class ManifestEditorTest {
         editedManifest,
         "com.android.vending.splits.required",
         xmlBooleanAttribute(ANDROID_NAMESPACE_URI, "value", VALUE_RESOURCE_ID, false));
+    assertThat(getApplicationElement(editedManifest).getAttributeList())
+        .containsExactly(
+            xmlBooleanAttribute(
+                ANDROID_NAMESPACE_URI,
+                IS_SPLIT_REQUIRED_ATTRIBUTE_NAME,
+                IS_SPLIT_REQUIRED_RESOURCE_ID,
+                false));
   }
 
   @Test
@@ -673,13 +731,7 @@ public class ManifestEditorTest {
 
   private static void assertOnlyMetadataElement(
       AndroidManifest manifest, String name, XmlAttribute valueAttr) {
-    XmlNode manifestRoot = manifest.getManifestRoot().getProto();
-    XmlElement manifestElement = manifestRoot.getElement();
-    assertThat(manifestElement.getName()).isEqualTo("manifest");
-    assertThat(manifestElement.getChildCount()).isEqualTo(1);
-    XmlNode applicationNode = manifestElement.getChild(0);
-    XmlElement applicationElement = applicationNode.getElement();
-    assertThat(applicationElement.getName()).isEqualTo("application");
+    XmlElement applicationElement = getApplicationElement(manifest);
     assertThat(applicationElement.getChildCount()).isEqualTo(1);
     XmlNode metadataNode = applicationElement.getChild(0);
     XmlElement metadataElement = metadataNode.getElement();
@@ -687,5 +739,16 @@ public class ManifestEditorTest {
     assertThat(metadataElement.getAttributeList())
         .containsExactly(
             xmlAttribute(ANDROID_NAMESPACE_URI, "name", NAME_RESOURCE_ID, name), valueAttr);
+  }
+
+  private static XmlElement getApplicationElement(AndroidManifest manifest) {
+    XmlNode manifestRoot = manifest.getManifestRoot().getProto();
+    XmlElement manifestElement = manifestRoot.getElement();
+    assertThat(manifestElement.getName()).isEqualTo("manifest");
+    assertThat(manifestElement.getChildCount()).isEqualTo(1);
+    XmlNode applicationNode = manifestElement.getChild(0);
+    XmlElement applicationElement = applicationNode.getElement();
+    assertThat(applicationElement.getName()).isEqualTo("application");
+    return applicationElement;
   }
 }

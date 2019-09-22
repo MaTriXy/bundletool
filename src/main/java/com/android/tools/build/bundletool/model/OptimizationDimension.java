@@ -21,4 +21,5 @@ public enum OptimizationDimension {
   ABI,
   SCREEN_DENSITY,
   LANGUAGE,
+  TEXTURE_COMPRESSION_FORMAT,
 }

@@ -23,6 +23,7 @@ import static com.android.tools.build.bundletool.model.AbiName.X86_64;
 import static com.android.tools.build.bundletool.model.BundleModule.ABI_SPLITTER;
 import static com.android.tools.build.bundletool.model.BundleModule.APEX_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.APEX_MANIFEST_PATH;
+import static com.android.tools.build.bundletool.model.BundleModule.APEX_NOTICE_PATH;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.android.bundle.Files.ApexImages;
@@ -32,14 +33,24 @@ import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.utils.files.BufferedIo;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.util.Optional;
 
 /** Validates an APEX bundle. */
 public class ApexBundleValidator extends SubValidator {
+
+  private static final ImmutableList<ZipPath> ALLOWED_APEX_FILES_OUTSIDE_APEX_DIRECTORY =
+      ImmutableList.of(APEX_MANIFEST_PATH, APEX_NOTICE_PATH);
 
   // The bundle must contain a system image for at least one of each of these sets.
   private static final ImmutableSet<ImmutableSet<ImmutableSet<AbiName>>> REQUIRED_ONE_OF_ABI_SETS =
@@ -78,11 +89,13 @@ public class ApexBundleValidator extends SubValidator {
       return;
     }
 
-    if (!module.getEntry(APEX_MANIFEST_PATH).isPresent()) {
+    Optional<ModuleEntry> apexManifest = module.getEntry(APEX_MANIFEST_PATH);
+    if (!apexManifest.isPresent()) {
       throw ValidationException.builder()
           .withMessage("Missing expected file in APEX bundle: '%s'.", APEX_MANIFEST_PATH)
           .build();
     }
+    validateApexManifest(apexManifest.get());
 
     ImmutableSet.Builder<String> apexImagesBuilder = ImmutableSet.builder();
     ImmutableSet.Builder<String> apexFileNamesBuilder = ImmutableSet.builder();
@@ -91,7 +104,7 @@ public class ApexBundleValidator extends SubValidator {
       if (path.startsWith(APEX_DIRECTORY)) {
         apexImagesBuilder.add(path.toString());
         apexFileNamesBuilder.add(path.getFileName().toString());
-      } else if (!path.equals(APEX_MANIFEST_PATH)) {
+      } else if (!ALLOWED_APEX_FILES_OUTSIDE_APEX_DIRECTORY.contains(path)) {
         throw ValidationException.builder()
             .withMessage("Unexpected file in APEX bundle: '%s'.", entry.getPath())
             .build();
@@ -153,6 +166,20 @@ public class ApexBundleValidator extends SubValidator {
       throw ValidationException.builder()
           .withMessage("Targeted APEX image files are missing: %s", missingTargetedImages)
           .build();
+    }
+  }
+
+  private static void validateApexManifest(ModuleEntry entry) {
+    try (InputStream inputStream = entry.getContent();
+        BufferedReader reader = BufferedIo.reader(inputStream)) {
+      JsonObject json = new JsonParser().parse(reader).getAsJsonObject();
+      if (json.get("name") == null) {
+        throw ValidationException.builder()
+            .withMessage("APEX manifest must have a package name.")
+            .build();
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException("Couldn't read APEX manifest.", e);
     }
   }
 }

@@ -25,6 +25,8 @@ import static com.android.tools.build.bundletool.model.AndroidManifest.GL_ES_VER
 import static com.android.tools.build.bundletool.model.AndroidManifest.GL_VERSION_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.HAS_CODE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.IS_FEATURE_SPLIT_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.IS_SPLIT_REQUIRED_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.IS_SPLIT_REQUIRED_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.MAX_SDK_VERSION_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.MAX_SDK_VERSION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.META_DATA_ELEMENT_NAME;
@@ -40,10 +42,14 @@ import static com.android.tools.build.bundletool.model.AndroidManifest.SERVICE_E
 import static com.android.tools.build.bundletool.model.AndroidManifest.SPLIT_NAME_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.SUPPORTS_GL_TEXTURE_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.TARGET_SANDBOX_VERSION_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.TARGET_SDK_VERSION_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.TARGET_SDK_VERSION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.USES_FEATURE_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.USES_SDK_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VALUE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_CODE_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_NAME_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_NAME_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoAttributeBuilder.createAndroidAttribute;
 import static com.google.common.collect.MoreCollectors.toOptional;
 import static java.util.stream.Collectors.joining;
@@ -91,6 +97,12 @@ public class ManifestEditor {
         MAX_SDK_VERSION_ATTRIBUTE_NAME, MAX_SDK_VERSION_RESOURCE_ID, maxSdkVersion);
   }
 
+  /** Sets the targetSdkVersion attribute. */
+  public ManifestEditor setTargetSdkVersion(int targetSdkVersion) {
+    return setUsesSdkAttribute(
+        TARGET_SDK_VERSION_ATTRIBUTE_NAME, TARGET_SDK_VERSION_RESOURCE_ID, targetSdkVersion);
+  }
+
   /** Sets split id and related manifest entries for feature/master split. */
   public ManifestEditor setSplitIdForFeatureSplit(String splitId) {
     if (isBaseSplit(splitId)) {
@@ -125,6 +137,13 @@ public class ManifestEditor {
     manifestElement
         .getOrCreateAndroidAttribute("versionCode", VERSION_CODE_RESOURCE_ID)
         .setValueAsDecimalInteger(versionCode);
+    return this;
+  }
+
+  public ManifestEditor setVersionName(String versionName) {
+    manifestElement
+        .getOrCreateAndroidAttribute(VERSION_NAME_ATTRIBUTE_NAME, VERSION_NAME_RESOURCE_ID)
+        .setValueAsString(versionName);
     return this;
   }
 
@@ -204,13 +223,26 @@ public class ManifestEditor {
   /**
    * Sets a flag whether the app is able to run without any config splits.
    *
-   * <p>The information is stored as a {@code <meta-data android:name="..." android:value="..."/>}
-   * element inside the {@code <application>} element.
+   * <p>The information is stored as:
+   *
+   * <ul>
+   *   <li>{@code <meta-data android:name="..." android:value="..."/>} element inside the {@code
+   *       <application>} element (read by the PlayCore library).
+   *   <li>{@code <application android:isSplitRequired="..."/>} attribute (read by the Android
+   *       Platform since Q).
+   * </ul>
    */
   public ManifestEditor setSplitsRequired(boolean value) {
     setMetadataValue(
         META_DATA_KEY_SPLITS_REQUIRED,
         createAndroidAttribute("value", VALUE_RESOURCE_ID).setValueAsBoolean(value));
+
+    manifestElement
+        .getOrCreateChildElement(APPLICATION_ELEMENT_NAME)
+        .getOrCreateAndroidAttribute(
+            IS_SPLIT_REQUIRED_ATTRIBUTE_NAME, IS_SPLIT_REQUIRED_RESOURCE_ID)
+        .setValueAsBoolean(value);
+
     return this;
   }
 

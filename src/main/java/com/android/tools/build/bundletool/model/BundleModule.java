@@ -27,6 +27,7 @@ import static java.util.function.Function.identity;
 
 import com.android.aapt.Resources.ResourceTable;
 import com.android.aapt.Resources.XmlNode;
+import com.android.bundle.Commands.DeliveryType;
 import com.android.bundle.Commands.ModuleMetadata;
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Files.ApexImages;
@@ -76,6 +77,9 @@ public abstract class BundleModule {
   /** The file of an App Bundle module that contains the APEX manifest. */
   public static final ZipPath APEX_MANIFEST_PATH = ZipPath.create("root/apex_manifest.json");
 
+  /** The NOTICE file of an APEX Bundle module. */
+  public static final ZipPath APEX_NOTICE_PATH = ZipPath.create("assets/NOTICE.html.gz");
+
   /** Used to parse file names in the apex/ directory, for multi-Abi targeting. */
   public static final Splitter ABI_SPLITTER = Splitter.on(".").omitEmptyStrings();
 
@@ -85,6 +89,7 @@ public abstract class BundleModule {
   public enum ModuleDeliveryType {
     ALWAYS_INITIAL_INSTALL,
     CONDITIONAL_INITIAL_INSTALL,
+    // Covers both on-demand and fast-follow modes.
     NO_INITIAL_INSTALL
   }
 
@@ -132,7 +137,7 @@ public abstract class BundleModule {
   }
 
   public boolean isBaseModule() {
-    return BundleModuleName.BASE_MODULE_NAME.equals(getName().getName());
+    return BundleModuleName.BASE_MODULE_NAME.equals(getName());
   }
 
   public ModuleDeliveryType getDeliveryType() {
@@ -158,6 +163,26 @@ public abstract class BundleModule {
 
     // Legacy onDemand attribute is equal to false or for base module: no delivery information.
     return ALWAYS_INITIAL_INSTALL;
+  }
+
+  public Optional<ModuleDeliveryType> getInstantDeliveryType() {
+    if (!isInstantModule()) {
+      return Optional.empty();
+    }
+    if (getAndroidManifest().getInstantManifestDeliveryElement().isPresent()) {
+      ManifestDeliveryElement instantManifestDeliveryElement =
+          getAndroidManifest().getInstantManifestDeliveryElement().get();
+      if (instantManifestDeliveryElement.hasInstallTimeElement()) {
+        return instantManifestDeliveryElement.hasModuleConditions()
+            ? Optional.of(CONDITIONAL_INITIAL_INSTALL)
+            : Optional.of(ALWAYS_INITIAL_INSTALL);
+      } else {
+        return Optional.of(NO_INITIAL_INSTALL);
+      }
+    }
+
+    // Handling dist:instant attribute value.
+    return Optional.of(NO_INITIAL_INSTALL);
   }
 
   public ModuleType getModuleType() {
@@ -240,11 +265,23 @@ public abstract class BundleModule {
   public ModuleMetadata getModuleMetadata() {
     return ModuleMetadata.newBuilder()
         .setName(getName().getName())
-        .setOnDemand(getDeliveryType().equals(NO_INITIAL_INSTALL))
         .setIsInstant(isInstantModule())
         .addAllDependencies(getDependencies())
         .setTargeting(getModuleTargeting())
+        .setDeliveryType(moduleDeliveryTypeToDeliveryType(getDeliveryType()))
         .build();
+  }
+
+  private static DeliveryType moduleDeliveryTypeToDeliveryType(
+      ModuleDeliveryType moduleDeliveryType) {
+    switch (moduleDeliveryType) {
+      case ALWAYS_INITIAL_INSTALL:
+      case CONDITIONAL_INITIAL_INSTALL:
+        return DeliveryType.INSTALL_TIME;
+      case NO_INITIAL_INSTALL:
+        return DeliveryType.ON_DEMAND;
+    }
+    throw new IllegalArgumentException("Unknown module delivery type: " + moduleDeliveryType);
   }
 
   public static Builder builder() {
@@ -261,6 +298,10 @@ public abstract class BundleModule {
     public abstract Builder setBundleConfig(BundleConfig value);
 
     public abstract Builder setResourceTable(ResourceTable resourceTable);
+
+    public Builder setAndroidManifest(AndroidManifest androidManifest) {
+      return setAndroidManifestProto(androidManifest.getManifestRoot().getProto());
+    }
 
     public abstract Builder setAndroidManifestProto(XmlNode manifestProto);
 

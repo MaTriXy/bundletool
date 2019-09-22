@@ -16,11 +16,10 @@
 package com.android.tools.build.bundletool.device;
 
 import static com.google.common.truth.Truth.assertThat;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Matchers.eq;
-import static org.mockito.Matchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -61,8 +60,8 @@ public final class DdmlibDeviceTest {
     ddmlibDevice.installApks(
         ImmutableList.of(APK_PATH), InstallOptions.builder().setAllowDowngrade(false).build());
 
-    // -d should *not* be passed as extra arg.
-    verify(mockDevice).installPackage(eq(APK_PATH.toString()), anyBoolean(), (String) isNull());
+    // "-d" should *not* be passed as extra arg.
+    verify(mockDevice).installPackage(eq(APK_PATH.toString()), anyBoolean() /*, no extra args */);
   }
 
   @Test

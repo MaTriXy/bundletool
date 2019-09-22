@@ -16,27 +16,29 @@
 
 package com.android.tools.build.bundletool.validation;
 
-import static com.android.tools.build.bundletool.model.AndroidManifest.MODULE_TYPE_ASSET_VALUE;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForAssetModule;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForFeature;
-import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.clearApplication;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withApplication;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFeatureCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFusingAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstallTimeDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstant;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstantInstallTimeDelivery;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstantOnDemandDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMaxSdkVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withOnDemandAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withOnDemandDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withSplitId;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withTargetSandboxVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withTargetSdkVersion;
-import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withTypeAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withVersionCode;
-import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withoutVersionCode;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.exceptions.ValidationException;
 import com.android.tools.build.bundletool.model.exceptions.manifest.ManifestDuplicateAttributeException;
@@ -46,6 +48,7 @@ import com.android.tools.build.bundletool.model.exceptions.manifest.ManifestSdkT
 import com.android.tools.build.bundletool.model.exceptions.manifest.ManifestSdkTargetingException.MinSdkInvalidException;
 import com.android.tools.build.bundletool.model.exceptions.manifest.ManifestVersionCodeConflictException;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoAttributeBuilder;
+import com.android.tools.build.bundletool.testing.AppBundleBuilder;
 import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.android.tools.build.bundletool.testing.ManifestProtoUtils.ManifestMutator;
 import com.google.common.collect.ImmutableList;
@@ -341,49 +344,6 @@ public class AndroidManifestValidatorTest {
   }
 
   @Test
-  public void onDemandAndInstantAttributeSetToTrue_throws() throws Exception {
-    BundleModule module =
-        new BundleModuleBuilder(FEATURE_MODULE_NAME)
-            .setManifest(
-                androidManifest(
-                    PKG_NAME,
-                    withOnDemandAttribute(true),
-                    withInstant(true),
-                    withFusingAttribute(true)))
-            .build();
-
-    ValidationException exception =
-        assertThrows(
-            ValidationException.class, () -> new AndroidManifestValidator().validateModule(module));
-    assertThat(exception)
-        .hasMessageThat()
-        .contains(
-            String.format(
-                "Module cannot be on-demand and 'instant' at the same time (module '%s').",
-                FEATURE_MODULE_NAME));
-  }
-
-  @Test
-  public void onDemandElementAndInstantAttributeSetToTrue_throws() throws Exception {
-    BundleModule module =
-        new BundleModuleBuilder(FEATURE_MODULE_NAME)
-            .setManifest(
-                androidManifest(
-                    PKG_NAME, withOnDemandDelivery(), withInstant(true), withFusingAttribute(true)))
-            .build();
-
-    ValidationException exception =
-        assertThrows(
-            ValidationException.class, () -> new AndroidManifestValidator().validateModule(module));
-    assertThat(exception)
-        .hasMessageThat()
-        .contains(
-            String.format(
-                "Module cannot be on-demand and 'instant' at the same time (module '%s').",
-                FEATURE_MODULE_NAME));
-  }
-
-  @Test
   public void onDemandSetToFalseAndInstantAttributeSetToTrue_ok() throws Exception {
     BundleModule module =
         new BundleModuleBuilder(FEATURE_MODULE_NAME)
@@ -432,26 +392,80 @@ public class AndroidManifestValidatorTest {
   }
 
   @Test
-  public void moduleConditionsSetAndInstantAttributeTrue_throws() throws Exception {
+  public void withCorrectTargetSandboxVersionCode_ok() throws Exception {
+    BundleModule module = baseModule(withTargetSandboxVersion(2));
+
+    new AndroidManifestValidator().validateAllModules(ImmutableList.of(module));
+  }
+
+  @Test
+  public void withHighTargetSandboxVersionCode_throws() throws Exception {
+    BundleModule module = baseModule(withTargetSandboxVersion(3));
+
+    ValidationException e =
+        assertThrows(
+            ValidationException.class,
+            () -> new AndroidManifestValidator().validateAllModules(ImmutableList.of(module)));
+
+    assertThat(e).hasMessageThat().contains("cannot have a value greater than 2, but found 3");
+  }
+
+  @Test
+  public void withMinSdkLowerThanBase_throws() throws Exception {
+    BundleModule base = baseModule(withMinSdkVersion(20));
     BundleModule module =
         new BundleModuleBuilder(FEATURE_MODULE_NAME)
-            .setManifest(
-                androidManifest(
-                    PKG_NAME,
-                    withFeatureCondition("com.android.feature"),
-                    withInstant(true),
-                    withFusingAttribute(true)))
+            .setManifest(androidManifest(PKG_NAME, withMinSdkVersion(19)))
             .build();
 
-    ValidationException exception =
+    ValidationException e =
         assertThrows(
-            ValidationException.class, () -> new AndroidManifestValidator().validateModule(module));
-    assertThat(exception)
+            ValidationException.class,
+            () ->
+                new AndroidManifestValidator().validateAllModules(ImmutableList.of(base, module)));
+
+    assertThat(e)
         .hasMessageThat()
         .contains(
-            String.format(
-                "The attribute 'instant' cannot be true for conditional module" + " (module '%s').",
-                FEATURE_MODULE_NAME));
+            "cannot have a minSdkVersion attribute with a value lower than the one from the base"
+                + " module");
+  }
+
+  @Test
+  public void withMinSdkEqualThanBase_ok() throws Exception {
+    BundleModule base = baseModule(withMinSdkVersion(20));
+    BundleModule module =
+        new BundleModuleBuilder(FEATURE_MODULE_NAME)
+            .setManifest(androidManifest(PKG_NAME, withMinSdkVersion(20)))
+            .build();
+
+    new AndroidManifestValidator().validateAllModules(ImmutableList.of(base, module));
+
+    // No exception thrown.
+  }
+
+  @Test
+  public void withMinSdkUndeclared_ok() throws Exception {
+    BundleModule base = baseModule(withMinSdkVersion(20));
+    BundleModule module =
+        new BundleModuleBuilder(FEATURE_MODULE_NAME).setManifest(androidManifest(PKG_NAME)).build();
+
+    new AndroidManifestValidator().validateAllModules(ImmutableList.of(base, module));
+
+    // No exception thrown.
+  }
+
+  @Test
+  public void withMinSdkHigherThanBase_ok() throws Exception {
+    BundleModule base = baseModule(withMinSdkVersion(20));
+    BundleModule module =
+        new BundleModuleBuilder(FEATURE_MODULE_NAME)
+            .setManifest(androidManifest(PKG_NAME, withMinSdkVersion(21)))
+            .build();
+
+    new AndroidManifestValidator().validateAllModules(ImmutableList.of(base, module));
+
+    // No exception thrown.
   }
 
   @Test
@@ -676,16 +690,30 @@ public class AndroidManifestValidatorTest {
   }
 
   @Test
+  public void bundleModules_differentTargetSandboxVersionCode_throws() throws Exception {
+    ImmutableList<BundleModule> bundleModules =
+        ImmutableList.of(
+            new BundleModuleBuilder(BASE_MODULE_NAME)
+                .setManifest(androidManifest("com.test", withTargetSandboxVersion(1)))
+                .build(),
+            new BundleModuleBuilder(FEATURE_MODULE_NAME)
+                .setManifest(androidManifest("com.test", withTargetSandboxVersion(2)))
+                .build());
+
+    ValidationException exception =
+        assertThrows(
+            ValidationException.class,
+            () -> new AndroidManifestValidator().validateAllModules(bundleModules));
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("should have the same value across modules, but found [1,2]");
+  }
+
+  @Test
   public void assetModule_noApplication_ok() throws Exception {
     BundleModule module =
         new BundleModuleBuilder("asset_module")
-            .setManifest(
-                androidManifest(
-                    "com.test.app",
-                    withTypeAttribute(MODULE_TYPE_ASSET_VALUE),
-                    withOnDemandDelivery(),
-                    withFusingAttribute(true),
-                    clearApplication()))
+            .setManifest(androidManifestForAssetModule("com.test.app"))
             .build();
     new AndroidManifestValidator().validateModule(module);
   }
@@ -695,11 +723,8 @@ public class AndroidManifestValidatorTest {
     BundleModule module =
         new BundleModuleBuilder("asset_module")
             .setManifest(
-                androidManifest(
-                    "com.test.app",
-                    withTypeAttribute(MODULE_TYPE_ASSET_VALUE),
-                    withOnDemandDelivery(),
-                    withFusingAttribute(true)))
+                androidManifestForAssetModule(
+                    "com.test.app", withOnDemandDelivery(), withApplication()))
             .build();
 
     Throwable exception =
@@ -720,14 +745,7 @@ public class AndroidManifestValidatorTest {
       @FromDataPoints("sdkMutators") ManifestMutator sdkMutator) throws Exception {
     BundleModule module =
         new BundleModuleBuilder("asset_module")
-            .setManifest(
-                androidManifest(
-                    "com.test.app",
-                    withTypeAttribute(MODULE_TYPE_ASSET_VALUE),
-                    withOnDemandDelivery(),
-                    withFusingAttribute(true),
-                    clearApplication(),
-                    sdkMutator))
+            .setManifest(androidManifestForAssetModule("com.test.app", sdkMutator))
             .build();
 
     ValidationException exception =
@@ -746,14 +764,7 @@ public class AndroidManifestValidatorTest {
                 .setManifest(androidManifest("com.test", withVersionCode(2)))
                 .build(),
             new BundleModuleBuilder("asset_module")
-                .setManifest(
-                    androidManifest(
-                        "com.test.app",
-                        withTypeAttribute(MODULE_TYPE_ASSET_VALUE),
-                        withOnDemandDelivery(),
-                        withFusingAttribute(true),
-                        clearApplication(),
-                        withoutVersionCode()))
+                .setManifest(androidManifestForAssetModule("com.test.app"))
                 .build());
     new AndroidManifestValidator().validateAllModules(bundleModules);
   }
@@ -766,13 +777,7 @@ public class AndroidManifestValidatorTest {
                 .setManifest(androidManifest("com.test", withVersionCode(2)))
                 .build(),
             new BundleModuleBuilder("asset_module")
-                .setManifest(
-                    androidManifest(
-                        "com.test.app",
-                        withTypeAttribute(MODULE_TYPE_ASSET_VALUE),
-                        withOnDemandDelivery(),
-                        withFusingAttribute(true),
-                        clearApplication()))
+                .setManifest(androidManifestForAssetModule("com.test.app", withVersionCode(42)))
                 .build());
 
     Throwable exception =
@@ -820,5 +825,172 @@ public class AndroidManifestValidatorTest {
             .build();
 
     new AndroidManifestValidator().validateModule(featureModule);
+  }
+
+  @Test
+  public void assetModuleWithInstantAttributeAndInstantDeliveryElement_throws() throws Exception {
+    BundleModule featureModule =
+        new BundleModuleBuilder("asset_module")
+            .setManifest(
+                androidManifestForAssetModule(
+                    PKG_NAME, withInstantOnDemandDelivery(), withInstant(true)))
+            .build();
+
+    Throwable exception =
+        assertThrows(
+            ValidationException.class,
+            () -> new AndroidManifestValidator().validateModule(featureModule));
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("The <dist:instant-delivery> element and dist:instant attribute cannot be used"
+            + " together (module: 'asset_module').");
+  }
+
+  @Test
+  public void assetModuleWithConditionalTargeting_throws() throws Exception {
+    BundleModule module =
+        new BundleModuleBuilder("assetmodule")
+            .setManifest(androidManifestForAssetModule(PKG_NAME, withFeatureCondition("camera")))
+            .build();
+    ValidationException exception =
+        assertThrows(
+            ValidationException.class, () -> new AndroidManifestValidator().validateModule(module));
+    assertThat(exception)
+        .hasMessageThat()
+        .matches(
+            "Conditional targeting is not allowed in asset packs, but found in 'assetmodule'.");
+  }
+
+  @Test
+  public void assetModuleWithOnDemandAndInstantAttributeSetToTrue_ok() throws Exception {
+    BundleModule assetModule =
+        new BundleModuleBuilder("assetmodule")
+            .setManifest(
+                androidManifestForAssetModule(
+                    PKG_NAME, withOnDemandAttribute(true), withInstant(true)))
+            .build();
+
+    new AndroidManifestValidator().validateModule(assetModule);
+  }
+
+  @Test
+  public void instantAssetModuleWithInstallTimeDelivery_throws() throws Exception {
+    BundleModule module =
+        new BundleModuleBuilder("assetmodule")
+            .setManifest(
+                androidManifestForAssetModule(
+                    PKG_NAME, withInstallTimeDelivery(), withInstantOnDemandDelivery()))
+            .build();
+
+    ValidationException exception =
+        assertThrows(
+            ValidationException.class, () -> new AndroidManifestValidator().validateModule(module));
+    assertThat(exception)
+        .hasMessageThat()
+        .startsWith(
+            "Instant asset packs cannot have install-time delivery (module 'assetmodule').");
+  }
+
+  @Test
+  public void instantAssetModuleWithInstallTimeInstantDelivery_throws() throws Exception {
+    BundleModule module =
+        new BundleModuleBuilder("assetmodule")
+            .setManifest(
+                androidManifestForAssetModule(
+                    PKG_NAME, withOnDemandDelivery(), withInstantInstallTimeDelivery()))
+            .build();
+
+    ValidationException exception =
+        assertThrows(
+            ValidationException.class, () -> new AndroidManifestValidator().validateModule(module));
+    assertThat(exception)
+        .hasMessageThat()
+        .startsWith("Instant delivery cannot be install-time (module 'assetmodule').");
+  }
+
+  @Test
+  public void assetModulesWithAllowedDeliveryCombinationsSucceed() throws Exception {
+    ImmutableList<BundleModule> modules =
+        ImmutableList.of(
+            new BundleModuleBuilder("assetmodule1")
+                .setManifest(
+                    androidManifestForAssetModule(
+                        PKG_NAME, withOnDemandDelivery(), withInstant(true)))
+                .build(),
+            new BundleModuleBuilder("assetmodule2")
+                .setManifest(
+                    androidManifestForAssetModule(
+                        PKG_NAME, withOnDemandAttribute(true), withInstant(true)))
+                .build(),
+            new BundleModuleBuilder("assetmodule3")
+                .setManifest(
+                    androidManifestForAssetModule(
+                        PKG_NAME, withOnDemandDelivery(), withInstantOnDemandDelivery()))
+                .build(),
+            new BundleModuleBuilder("assetmodule4")
+                .setManifest(
+                    androidManifestForAssetModule(
+                        PKG_NAME, withOnDemandAttribute(true), withInstantOnDemandDelivery()))
+                .build());
+
+    AndroidManifestValidator validator = new AndroidManifestValidator();
+    modules.forEach(validator::validateModule);
+  }
+
+  @Test
+  public void validateBundle_upfront_highMinSdk_succeeds() throws Exception {
+    new AndroidManifestValidator()
+        .validateBundle(
+            createAppBundle(
+                /* minSdkVersion= */ 23,
+                new BundleModuleBuilder("asset_module")
+                    .setManifest(androidManifestForAssetModule(PKG_NAME, withInstallTimeDelivery()))
+                    .build()));
+  }
+
+  @Test
+  public void validateBundle_onDemand_lowMinSdk_succeeds() throws Exception {
+    new AndroidManifestValidator()
+        .validateBundle(
+            createAppBundle(
+                /* minSdkVersion= */ 15,
+                new BundleModuleBuilder("asset_module")
+                    .setManifest(androidManifestForAssetModule(PKG_NAME, withOnDemandDelivery()))
+                    .build()));
+  }
+
+  @Test
+  public void validateBundle_upfront_lowMinSdk_throws() throws Exception {
+    ValidationException e =
+        assertThrows(
+            ValidationException.class,
+            () ->
+                new AndroidManifestValidator()
+                    .validateBundle(
+                        createAppBundle(
+                            /* minSdkVersion= */ 15,
+                            new BundleModuleBuilder("asset_module")
+                                .setManifest(
+                                    androidManifestForAssetModule(
+                                        PKG_NAME, withInstallTimeDelivery()))
+                                .build())));
+
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Asset packs with install time delivery are not supported in SDK 15");
+  }
+
+  private static AppBundle createAppBundle(int minSdkVersion, BundleModule... assetModules)
+      throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .addModule(
+                new BundleModuleBuilder(BASE_MODULE_NAME)
+                    .setManifest(androidManifest(PKG_NAME, withMinSdkVersion(minSdkVersion)))
+                    .build());
+    for (BundleModule assetModule : assetModules) {
+      appBundleBuilder.addModule(assetModule);
+    }
+    return appBundleBuilder.build();
   }
 }
