@@ -18,6 +18,7 @@ package com.android.tools.build.bundletool.model.utils.files;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.android.tools.build.bundletool.model.ZipPath;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -48,8 +49,22 @@ public final class FilePreconditions {
    * @param fileDescription description of the file to be used in an error message (eg. "Zip file",
    *     "APK")
    */
+  public static void checkFileHasExtension(String fileDescription, ZipPath path, String extension) {
+    checkFileHasExtension(fileDescription, path.getFileName().toString(), extension);
+  }
+
+  /**
+   * Checks the extension of the given file.
+   *
+   * @param fileDescription description of the file to be used in an error message (eg. "Zip file",
+   *     "APK")
+   */
   public static void checkFileHasExtension(String fileDescription, Path path, String extension) {
-    String filename = path.getFileName().toString();
+    checkFileHasExtension(fileDescription, path.getFileName().toString(), extension);
+  }
+
+  private static void checkFileHasExtension(
+      String fileDescription, String filename, String extension) {
     checkArgument(
         filename.endsWith(extension),
         "%s '%s' is expected to have '%s' extension.",
@@ -61,7 +76,7 @@ public final class FilePreconditions {
   /** Checks whether the given path denotes an existing directory. */
   public static void checkDirectoryExists(Path path) {
     checkArgument(Files.exists(path), "Directory '%s' was not found.", path);
-    checkArgument(Files.isDirectory(path), "'%s' is not a directory.");
+    checkArgument(Files.isDirectory(path), "'%s' is not a directory.", path);
   }
 
   /** Checks whether the given path denotes an existing empty directory. */

@@ -18,8 +18,8 @@ package com.android.tools.build.bundletool.model;
 import static com.android.tools.build.bundletool.model.WearApkLocator.WEAR_APK_1_0_METADATA_KEY;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMetadataResource;
+import static com.android.tools.build.bundletool.testing.TestUtils.createModuleEntryForFile;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -35,12 +35,12 @@ import com.android.aapt.Resources.XmlNode;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.TestData;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.testing.ResourceTableBuilder;
 import com.android.tools.build.bundletool.testing.ResourcesUtils;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import java.util.Optional;
+import java.util.Collection;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -56,7 +56,7 @@ public final class WearApkLocatorTest {
   private static final String WEAR_DESC_XML_RES_PATH = "res/xml/wearable_app_desc.xml";
   private static final String WEAR_APK_RES_PATH = "res/raw/wearable_app.apk";
 
-  private final ZipPath wearableApkPath = ZipPath.create("res/raw/wearable_app.apk");
+  private final ZipPath wearableApkPath = ZipPath.create("res/raw/wear.apk");
 
   @Test
   public void wearApkLocationSuccessful() {
@@ -66,8 +66,8 @@ public final class WearApkLocatorTest {
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    Optional<ZipPath> zipPath = WearApkLocator.findEmbeddedWearApkPath(moduleSplit);
-    assertThat(zipPath).hasValue(wearableApkPath);
+    Collection<ZipPath> zipPaths = WearApkLocator.findEmbeddedWearApkPaths(moduleSplit);
+    assertThat(zipPaths).containsExactly(wearableApkPath);
   }
 
   @Test
@@ -78,8 +78,8 @@ public final class WearApkLocatorTest {
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    Optional<ZipPath> zipPath = WearApkLocator.findEmbeddedWearApkPath(moduleSplit);
-    assertThat(zipPath).isEmpty();
+    Collection<ZipPath> zipPaths = WearApkLocator.findEmbeddedWearApkPaths(moduleSplit);
+    assertThat(zipPaths).isEmpty();
   }
 
   @Test
@@ -93,9 +93,10 @@ public final class WearApkLocatorTest {
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> WearApkLocator.findEmbeddedWearApkPath(moduleSplit));
+            InvalidBundleException.class,
+            () -> WearApkLocator.findEmbeddedWearApkPaths(moduleSplit));
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo(
@@ -124,9 +125,10 @@ public final class WearApkLocatorTest {
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> WearApkLocator.findEmbeddedWearApkPath(moduleSplit));
+            InvalidBundleException.class,
+            () -> WearApkLocator.findEmbeddedWearApkPaths(moduleSplit));
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo("More than one embedded Wear APK is not supported.");
@@ -148,9 +150,10 @@ public final class WearApkLocatorTest {
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> WearApkLocator.findEmbeddedWearApkPath(moduleSplit));
+            InvalidBundleException.class,
+            () -> WearApkLocator.findEmbeddedWearApkPaths(moduleSplit));
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo("No XML description file path found for Wear APK.");
@@ -168,14 +171,15 @@ public final class WearApkLocatorTest {
     // No description XML file in the entries.
     ImmutableList<ModuleEntry> entries =
         ImmutableList.of(
-            InMemoryModuleEntry.ofFile(
+            createModuleEntryForFile(
                 wearableApkPath.toString(), TestData.readBytes("testdata/apk/com.test.app.apk")));
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> WearApkLocator.findEmbeddedWearApkPath(moduleSplit));
+            InvalidBundleException.class,
+            () -> WearApkLocator.findEmbeddedWearApkPaths(moduleSplit));
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo(
@@ -191,7 +195,7 @@ public final class WearApkLocatorTest {
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    Optional<ZipPath> wearApkPath = WearApkLocator.findEmbeddedWearApkPath(moduleSplit);
+    Collection<ZipPath> wearApkPath = WearApkLocator.findEmbeddedWearApkPaths(moduleSplit);
     assertThat(wearApkPath).isEmpty();
   }
 
@@ -201,15 +205,16 @@ public final class WearApkLocatorTest {
     AndroidManifest androidManifest = buildAndroidManifestForWearApk(resourceTable);
     ImmutableList<ModuleEntry> entries =
         ImmutableList.of(
-            InMemoryModuleEntry.ofFile(
+            createModuleEntryForFile(
                 WEAR_DESC_XML_RES_PATH,
                 createWearableAppXmlDescription(XmlNode.getDefaultInstance()).toByteArray()));
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> WearApkLocator.findEmbeddedWearApkPath(moduleSplit));
+            InvalidBundleException.class,
+            () -> WearApkLocator.findEmbeddedWearApkPaths(moduleSplit));
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo(
@@ -223,13 +228,14 @@ public final class WearApkLocatorTest {
     AndroidManifest androidManifest = buildAndroidManifestForWearApk(resourceTable);
     ImmutableList<ModuleEntry> entries =
         ImmutableList.of(
-            InMemoryModuleEntry.ofFile(WEAR_DESC_XML_RES_PATH, "RandomText".getBytes(UTF_8)));
+            createModuleEntryForFile(WEAR_DESC_XML_RES_PATH, "RandomText".getBytes(UTF_8)));
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> WearApkLocator.findEmbeddedWearApkPath(moduleSplit));
+            InvalidBundleException.class,
+            () -> WearApkLocator.findEmbeddedWearApkPaths(moduleSplit));
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo(
@@ -242,18 +248,19 @@ public final class WearApkLocatorTest {
     AndroidManifest androidManifest = buildAndroidManifestForWearApk(resourceTable);
     ImmutableList<ModuleEntry> entries =
         ImmutableList.of(
-            InMemoryModuleEntry.ofFile(
+            createModuleEntryForFile(
                 WEAR_DESC_XML_RES_PATH,
                 createEmbeddedWearableAppXmlDescription(WEAR_APK_RES_NAME).toByteArray()));
 
     ModuleSplit moduleSplit = createModuleSplit(androidManifest, resourceTable, entries);
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> WearApkLocator.findEmbeddedWearApkPath(moduleSplit));
+            InvalidBundleException.class,
+            () -> WearApkLocator.findEmbeddedWearApkPaths(moduleSplit));
     assertThat(exception)
         .hasMessageThat()
-        .isEqualTo("Wear APK expected at location 'res/raw/wearable_app.apk' but was not found.");
+        .isEqualTo("Wear APK expected at location 'res/raw/wear.apk' but was not found.");
   }
 
   private ResourceTable buildResourceTableForEmbeddedWearApk(ZipPath wearableApkPath) {
@@ -284,16 +291,16 @@ public final class WearApkLocatorTest {
 
   private ImmutableList<ModuleEntry> buildEntriesForEmbeddedWearApk(ZipPath wearableApkPath) {
     return ImmutableList.of(
-        InMemoryModuleEntry.ofFile(
+        createModuleEntryForFile(
             wearableApkPath.toString(), TestData.readBytes("testdata/apk/com.test.app.apk")),
-        InMemoryModuleEntry.ofFile(
+        createModuleEntryForFile(
             WEAR_DESC_XML_RES_PATH,
             createEmbeddedWearableAppXmlDescription(WEAR_APK_RES_NAME).toByteArray()));
   }
 
   private ImmutableList<ModuleEntry> buildEntriesForUnbundledWearApk() {
     return ImmutableList.of(
-        InMemoryModuleEntry.ofFile(
+        createModuleEntryForFile(
             WEAR_DESC_XML_RES_PATH, createUnbundledWearableAppXmlDescription().toByteArray()));
   }
 

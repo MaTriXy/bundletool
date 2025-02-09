@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
+import com.google.common.collect.ImmutableList;
 import java.io.FileOutputStream;
 import java.nio.file.Path;
 import java.security.KeyPair;
@@ -66,8 +67,9 @@ public class SigningConfigurationTest {
             Optional.of(Password.createForTest(KEYSTORE_PASSWORD)),
             Optional.of(Password.createForTest(KEY_PASSWORD)));
 
-    assertThat(signingConfiguration.getPrivateKey()).isEqualTo(privateKey);
-    assertThat(signingConfiguration.getCertificates()).containsExactly(certificate);
+    assertThat(signingConfiguration.getSignerConfig().getPrivateKey()).isEqualTo(privateKey);
+    assertThat(signingConfiguration.getSignerConfig().getCertificates())
+        .containsExactly(certificate);
   }
 
   @Test
@@ -81,8 +83,9 @@ public class SigningConfigurationTest {
             Optional.of(Password.createForTest(KEYSTORE_PASSWORD)),
             Optional.of(Password.createForTest(KEY_PASSWORD)));
 
-    assertThat(signingConfiguration.getPrivateKey()).isEqualTo(privateKey);
-    assertThat(signingConfiguration.getCertificates()).containsExactly(certificate);
+    assertThat(signingConfiguration.getSignerConfig().getPrivateKey()).isEqualTo(privateKey);
+    assertThat(signingConfiguration.getSignerConfig().getCertificates())
+        .containsExactly(certificate);
   }
 
   @Test
@@ -133,8 +136,9 @@ public class SigningConfigurationTest {
             Optional.of(Password.createForTest(KEYSTORE_PASSWORD)),
             Optional.empty());
 
-    assertThat(signingConfiguration.getPrivateKey()).isEqualTo(privateKey);
-    assertThat(signingConfiguration.getCertificates()).containsExactly(certificate);
+    assertThat(signingConfiguration.getSignerConfig().getPrivateKey()).isEqualTo(privateKey);
+    assertThat(signingConfiguration.getSignerConfig().getCertificates())
+        .containsExactly(certificate);
   }
 
   @Test
@@ -151,6 +155,25 @@ public class SigningConfigurationTest {
                     Optional.of(Password.createForTest(KEYSTORE_PASSWORD)),
                     Optional.of(Password.createForTest(KEY_PASSWORD))));
     assertThat(e).hasMessageThat().contains("No key found with alias 'BadKeyAlias'");
+  }
+
+  @Test
+  public void buildSigningConfiguration_missingSigningCertificateLineage() throws Exception {
+    SignerConfig signerConfig = createSignerConfig("CN=SigningConfigurationTest");
+    SignerConfig oldSignerConfig = createSignerConfig("CN=SigningConfigurationTest Old");
+
+    Exception exception =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                SigningConfiguration.builder()
+                    .setSignerConfig(signerConfig)
+                    .setOldestSigner(oldSignerConfig)
+                    .build());
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Oldest signer should not be provided without signing certificate lineage.");
   }
 
   private Path createKeystore() throws Exception {
@@ -170,5 +193,15 @@ public class SigningConfigurationTest {
     Path keystorePath = tmp.getRoot().toPath().resolve("keystore.jks");
     keystore.store(new FileOutputStream(keystorePath.toFile()), keystorePassword.toCharArray());
     return keystorePath;
+  }
+
+  private static SignerConfig createSignerConfig(String distinguishedName) throws Exception {
+    KeyPair keyPair = KeyPairGenerator.getInstance("RSA").genKeyPair();
+    PrivateKey privateKey = keyPair.getPrivate();
+    X509Certificate oldCertificate = buildSelfSignedCertificate(keyPair, distinguishedName);
+    return SignerConfig.builder()
+        .setPrivateKey(privateKey)
+        .setCertificates(ImmutableList.of(oldCertificate))
+        .build();
   }
 }

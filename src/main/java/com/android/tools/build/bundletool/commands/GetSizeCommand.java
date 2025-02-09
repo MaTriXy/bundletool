@@ -17,19 +17,22 @@
 package com.android.tools.build.bundletool.commands;
 
 import static com.android.tools.build.bundletool.commands.GetSizeCommand.GetSizeSubcommand.STRING_TO_SUBCOMMAND;
-import static com.android.tools.build.bundletool.commands.GetSizeCommand.GetSizeSubcommand.TOTAL;
 import static com.android.tools.build.bundletool.model.utils.ApkSizeUtils.getCompressedSizeByApkPaths;
+import static com.android.tools.build.bundletool.model.utils.ApkSizeUtils.getVariantCompressedSizeByApkPaths;
 import static com.android.tools.build.bundletool.model.utils.CollectorUtils.combineMaps;
 import static com.android.tools.build.bundletool.model.utils.GetSizeCsvUtils.getSizeTotalOutputInCsv;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndReadable;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.util.function.Function.identity;
 
+import com.android.bundle.Commands.ApkDescription;
 import com.android.bundle.Commands.BuildApksResult;
 import com.android.bundle.Commands.Variant;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.tools.build.bundletool.commands.CommandHelp.CommandDescription;
 import com.android.tools.build.bundletool.commands.CommandHelp.FlagDescription;
+import com.android.tools.build.bundletool.device.AssetModuleSizeAggregator;
 import com.android.tools.build.bundletool.device.DeviceSpecParser;
 import com.android.tools.build.bundletool.device.VariantMatcher;
 import com.android.tools.build.bundletool.device.VariantTotalSizeAggregator;
@@ -37,10 +40,11 @@ import com.android.tools.build.bundletool.flags.Flag;
 import com.android.tools.build.bundletool.flags.ParsedFlags;
 import com.android.tools.build.bundletool.model.ConfigurationSizes;
 import com.android.tools.build.bundletool.model.GetSizeRequest;
-import com.android.tools.build.bundletool.model.GetSizeRequest.Dimension;
 import com.android.tools.build.bundletool.model.SizeConfiguration;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
+import com.android.tools.build.bundletool.model.utils.ConfigurationSizesMerger;
 import com.android.tools.build.bundletool.model.utils.ResultUtils;
+import com.android.tools.build.bundletool.model.utils.SizeFormatter;
 import com.android.tools.build.bundletool.model.utils.files.FilePreconditions;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.auto.value.AutoValue;
@@ -82,8 +86,8 @@ public abstract class GetSizeCommand implements GetSizeRequest {
     public static GetSizeSubcommand fromString(String subCommand) {
       GetSizeSubcommand result = STRING_TO_SUBCOMMAND.get(subCommand);
       if (result == null) {
-        throw ValidationException.builder()
-            .withMessage(
+        throw InvalidCommandException.builder()
+            .withInternalMessage(
                 "Unrecognized get-size command target: '%s'. Accepted values are: %s",
                 subCommand, STRING_TO_SUBCOMMAND.keySet())
             .build();
@@ -98,11 +102,22 @@ public abstract class GetSizeCommand implements GetSizeRequest {
   private static final Flag<Boolean> INSTANT_FLAG = Flag.booleanFlag("instant");
   private static final Flag<ImmutableSet<Dimension>> DIMENSIONS_FLAG =
       Flag.enumSet("dimensions", Dimension.class);
+  private static final Flag<Boolean> HUMAN_READABLE_SIZES_FLAG =
+      Flag.booleanFlag("human-readable-sizes");
   private static final Joiner COMMA_JOINER = Joiner.on(',');
 
   @VisibleForTesting
   static final ImmutableSet<Dimension> SUPPORTED_DIMENSIONS =
-      ImmutableSet.of(Dimension.SDK, Dimension.ABI, Dimension.LANGUAGE, Dimension.SCREEN_DENSITY);
+      ImmutableSet.of(
+          Dimension.SDK,
+          Dimension.ABI,
+          Dimension.LANGUAGE,
+          Dimension.SCREEN_DENSITY,
+          Dimension.TEXTURE_COMPRESSION_FORMAT,
+          Dimension.DEVICE_GROUP,
+          Dimension.DEVICE_TIER,
+          Dimension.COUNTRY_SET,
+          Dimension.SDK_RUNTIME);
 
   public abstract Path getApksArchivePath();
 
@@ -121,11 +136,15 @@ public abstract class GetSizeCommand implements GetSizeRequest {
   @Override
   public abstract boolean getInstant();
 
+  /** Gets whether to format sizes to human readable units. */
+  public abstract boolean getHumanReadableSizes();
+
   public static Builder builder() {
     return new AutoValue_GetSizeCommand.Builder()
         .setDeviceSpec(DeviceSpec.getDefaultInstance())
         .setInstant(false)
-        .setDimensions(ImmutableSet.of());
+        .setDimensions(ImmutableSet.of())
+        .setHumanReadableSizes(false);
   }
 
   /** Builder for the {@link GetSizeCommand}. */
@@ -154,6 +173,9 @@ public abstract class GetSizeCommand implements GetSizeRequest {
     /** Sets the sub-command of the get-size command, e.g. total. */
     public abstract Builder setGetSizeSubCommand(GetSizeSubcommand getSizeSubcommand);
 
+    /** Sets whether to format sizes to human readable units. */
+    public abstract Builder setHumanReadableSizes(boolean humanReadableSizes);
+
     public abstract GetSizeCommand build();
   }
 
@@ -162,6 +184,7 @@ public abstract class GetSizeCommand implements GetSizeRequest {
     Optional<Path> deviceSpecPath = DEVICE_SPEC_FLAG.getValue(flags);
     Optional<ImmutableSet<String>> modules = MODULES_FLAG.getValue(flags);
     Optional<Boolean> instant = INSTANT_FLAG.getValue(flags);
+    Optional<Boolean> pretty = HUMAN_READABLE_SIZES_FLAG.getValue(flags);
 
     ImmutableSet<Dimension> dimensions = DIMENSIONS_FLAG.getValue(flags).orElse(ImmutableSet.of());
     flags.checkNoUnknownFlags();
@@ -182,6 +205,7 @@ public abstract class GetSizeCommand implements GetSizeRequest {
     modules.ifPresent(command::setModules);
 
     instant.ifPresent(command::setInstant);
+    pretty.ifPresent(command::setHumanReadableSizes);
 
     if (dimensions.contains(Dimension.ALL)) {
       dimensions = SUPPORTED_DIMENSIONS;
@@ -197,7 +221,10 @@ public abstract class GetSizeCommand implements GetSizeRequest {
         flags
             .getSubCommand()
             .orElseThrow(
-                () -> new ValidationException("Target of the get-size command not found."));
+                () ->
+                    InvalidCommandException.builder()
+                        .withInternalMessage("Target of the get-size command not found.")
+                        .build());
 
     return GetSizeSubcommand.fromString(subCommand);
   }
@@ -211,7 +238,14 @@ public abstract class GetSizeCommand implements GetSizeRequest {
   }
 
   public void getSizeTotal(PrintStream output) {
-    output.print(getSizeTotalOutputInCsv(getSizeTotalInternal(), getDimensions()));
+    output.print(
+        getSizeTotalOutputInCsv(getSizeTotalInternal(), getDimensions(), getSizeFormatter()));
+  }
+
+  private SizeFormatter getSizeFormatter() {
+    return getHumanReadableSizes()
+        ? SizeFormatter.humanReadableFormatter()
+        : SizeFormatter.rawFormatter();
   }
 
   @VisibleForTesting
@@ -220,20 +254,37 @@ public abstract class GetSizeCommand implements GetSizeRequest {
 
     ImmutableList<Variant> variants =
         new VariantMatcher(getDeviceSpec(), getInstant()).getAllMatchingVariants(buildApksResult);
-    ImmutableMap<String, Long> compressedSizeByApkPaths =
-        getCompressedSizeByApkPaths(variants, getApksArchivePath());
+    ImmutableMap<String, Long> variantCompressedSizeByApkPaths =
+        getVariantCompressedSizeByApkPaths(variants, getApksArchivePath());
+
+    ImmutableList<String> assetModuleApks =
+        buildApksResult.getAssetSliceSetList().stream()
+            .flatMap(module -> module.getApkDescriptionList().stream())
+            .map(ApkDescription::getPath)
+            .collect(toImmutableList());
+    ImmutableMap<String, Long> assetModuleCompressedSizeByApkPaths =
+        getCompressedSizeByApkPaths(assetModuleApks, getApksArchivePath());
 
     ImmutableMap<SizeConfiguration, Long> minSizeConfigurationMap = ImmutableMap.of();
     ImmutableMap<SizeConfiguration, Long> maxSizeConfigurationMap = ImmutableMap.of();
 
     for (Variant variant : variants) {
-      ConfigurationSizes configurationSizes =
+      ConfigurationSizes variantConfigurationSizes =
           new VariantTotalSizeAggregator(
-                  compressedSizeByApkPaths,
+                  variantCompressedSizeByApkPaths,
                   Version.of(buildApksResult.getBundletool().getVersion()),
                   variant,
                   this)
               .getSize();
+      ConfigurationSizes assetModuleConfigurationSizes =
+          new AssetModuleSizeAggregator(
+                  buildApksResult.getAssetSliceSetList(),
+                  variant.getTargeting(),
+                  assetModuleCompressedSizeByApkPaths,
+                  this)
+              .getSize();
+      ConfigurationSizes configurationSizes =
+          ConfigurationSizesMerger.merge(variantConfigurationSizes, assetModuleConfigurationSizes);
       minSizeConfigurationMap =
           combineMaps(
               minSizeConfigurationMap, configurationSizes.getMinSizeConfigurationMap(), Math::min);
@@ -304,6 +355,13 @@ public abstract class GetSizeCommand implements GetSizeRequest {
                 .setDescription(
                     "When set, APKs of the instant modules will be considered instead of the "
                         + "installable APKs. Defaults to false.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(HUMAN_READABLE_SIZES_FLAG.getName())
+                .setDescription(
+                    "When set, size values are formatted to human readable units: KB, MB, GB."
+                        + " Defaults to false.")
                 .build())
         .build();
   }

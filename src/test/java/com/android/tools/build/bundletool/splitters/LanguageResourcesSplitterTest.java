@@ -30,14 +30,12 @@ import static com.android.tools.build.bundletool.testing.ResourcesTableFactory.t
 import static com.android.tools.build.bundletool.testing.ResourcesTableFactory.value;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDensityTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.lPlusVariantTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeApkTargeting;
 import static com.android.tools.build.bundletool.testing.TestUtils.extractPaths;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static junit.framework.TestCase.fail;
 
@@ -98,12 +96,6 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
 
     assertThat(languageSplits).hasSize(3);
     boolean hasDeSplit = false;
@@ -150,8 +142,7 @@ public class LanguageResourcesSplitterTest {
 
     ApkTargeting initialTargeting = apkDensityTargeting(DensityAlias.HDPI);
     ModuleSplit densitySplit =
-        ModuleSplit.forResources(module)
-            .toBuilder()
+        ModuleSplit.forResources(module).toBuilder()
             .setApkTargeting(initialTargeting)
             .setMasterSplit(false)
             .build();
@@ -182,8 +173,7 @@ public class LanguageResourcesSplitterTest {
 
     ApkTargeting initialTargeting = apkDensityTargeting(DensityAlias.HDPI);
     ModuleSplit densitySplit =
-        ModuleSplit.forResources(module)
-            .toBuilder()
+        ModuleSplit.forResources(module).toBuilder()
             .setApkTargeting(initialTargeting)
             .setMasterSplit(false)
             .build();
@@ -196,12 +186,6 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
 
     boolean hasDeHdpiSplit = false;
     boolean hasFrHdpiSplit = false;
@@ -262,12 +246,6 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
 
     boolean hasZhSplit = false;
     boolean hasDefaultSplit = false;
@@ -311,12 +289,6 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
 
     boolean hasFrSplit = false;
     boolean hasDefaultSplit = false;
@@ -365,12 +337,6 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
 
     for (ModuleSplit split : languageSplits) {
       assertThat(split.getResourceTable()).isPresent();
@@ -397,12 +363,7 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
+
     boolean hasFrSplit = false;
     boolean hasDefaultSplit = false;
     for (ModuleSplit split : languageSplits) {
@@ -446,12 +407,7 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
+
     boolean hasDeSplit = false;
     boolean hasDefaultSplit = false;
     for (ModuleSplit split : languageSplits) {
@@ -480,8 +436,7 @@ public class LanguageResourcesSplitterTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
     ModuleSplit baseSplit =
-        ModuleSplit.forResources(module)
-            .toBuilder()
+        ModuleSplit.forResources(module).toBuilder()
             // Pretend that this is not a master split to begin with => it cannot become master
             // split by running the splitter.
             .setMasterSplit(false)
@@ -496,12 +451,7 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
+
     boolean hasDeSplit = false;
     boolean hasDefaultSplit = false;
     for (ModuleSplit split : languageSplits) {
@@ -551,12 +501,7 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
+
     boolean hasFrSplit = false;
     boolean hasDefaultSplit = false;
     for (ModuleSplit languageSplit : languageSplits) {
@@ -609,12 +554,7 @@ public class LanguageResourcesSplitterTest {
                 .distinct()
                 .collect(toImmutableSet()))
         .containsExactly(SplitType.SPLIT);
-    assertThat(
-            languageSplits.stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
+
     Map<ApkTargeting, ModuleSplit> targetingMap =
         Maps.uniqueIndex(languageSplits, ModuleSplit::getApkTargeting);
 

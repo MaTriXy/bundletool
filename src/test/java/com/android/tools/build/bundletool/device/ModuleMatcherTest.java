@@ -16,10 +16,13 @@
 
 package com.android.tools.build.bundletool.device;
 
+import static com.android.tools.build.bundletool.device.OpenGlFeatureMatcher.CONDITIONAL_MODULES_OPEN_GL_NAME;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceFeatures;
+import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceGroups;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceWithSdk;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.mergeSpecs;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeModuleTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleDeviceGroupsTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleFeatureTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleMinSdkVersionTargeting;
 import static com.google.common.truth.Truth.assertThat;
@@ -44,8 +47,16 @@ public class ModuleMatcherTest {
   @Test
   public void matchesModuleTargeting_positive() {
     ModuleTargeting targeting =
-        mergeModuleTargeting(moduleMinSdkVersionTargeting(21), moduleFeatureTargeting("feature1"));
-    DeviceSpec deviceSpec = mergeSpecs(deviceWithSdk(22), deviceFeatures("feature1", "feature2"));
+        mergeModuleTargeting(
+            moduleMinSdkVersionTargeting(21),
+            moduleFeatureTargeting("feature1"),
+            moduleFeatureTargeting(CONDITIONAL_MODULES_OPEN_GL_NAME, 0x30001),
+            moduleDeviceGroupsTargeting("highRam"));
+    DeviceSpec deviceSpec =
+        mergeSpecs(
+            deviceWithSdk(22),
+            deviceFeatures("feature1", "feature2", "reqGlEsVersion=0x30002"),
+            deviceGroups("highRam"));
     ModuleMatcher moduleMatcher = new ModuleMatcher(deviceSpec);
 
     assertThat(moduleMatcher.matchesModuleTargeting(targeting)).isTrue();
@@ -70,5 +81,39 @@ public class ModuleMatcherTest {
     ModuleMatcher moduleMatcher = new ModuleMatcher(deviceSpecNoFeature);
 
     assertThat(moduleMatcher.matchesModuleTargeting(targeting)).isFalse();
+  }
+
+  @Test
+  public void matchesModuleTargeting_negative_openGlVersionTooLow() {
+    ModuleTargeting targeting =
+        mergeModuleTargeting(
+            moduleMinSdkVersionTargeting(21),
+            moduleFeatureTargeting(CONDITIONAL_MODULES_OPEN_GL_NAME, 0x30001));
+    DeviceSpec deviceSpec = mergeSpecs(deviceWithSdk(22), deviceFeatures("reqGlEsVersion=0x30000"));
+    ModuleMatcher moduleMatcher = new ModuleMatcher(deviceSpec);
+
+    assertThat(moduleMatcher.matchesModuleTargeting(targeting)).isFalse();
+  }
+
+  @Test
+  public void matchesModuleTargeting_negative_wrongDeviceGroup() {
+    ModuleTargeting targeting =
+        mergeModuleTargeting(
+            moduleMinSdkVersionTargeting(21),
+            moduleFeatureTargeting("feature1"),
+            moduleDeviceGroupsTargeting("highRam"));
+    DeviceSpec deviceSpec = mergeSpecs(deviceWithSdk(22), deviceGroups("lowRam"));
+    ModuleMatcher moduleMatcher = new ModuleMatcher(deviceSpec);
+
+    assertThat(moduleMatcher.matchesModuleTargeting(targeting)).isFalse();
+  }
+
+  @Test
+  public void matchesModuleTargeting_specWithoutSdk_positive() {
+    ModuleTargeting targeting = ModuleTargeting.getDefaultInstance();
+    DeviceSpec deviceSpec = mergeSpecs(deviceFeatures("feature1"));
+    ModuleMatcher moduleMatcher = new ModuleMatcher(deviceSpec);
+
+    assertThat(moduleMatcher.matchesModuleTargeting(targeting)).isTrue();
   }
 }

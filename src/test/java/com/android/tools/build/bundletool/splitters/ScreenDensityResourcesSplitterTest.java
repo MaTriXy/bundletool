@@ -54,13 +54,15 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static junit.framework.TestCase.fail;
 
 import com.android.aapt.ConfigurationOuterClass.Configuration;
+import com.android.aapt.Resources.ConfigValue;
+import com.android.aapt.Resources.Item;
 import com.android.aapt.Resources.ResourceTable;
 import com.android.aapt.Resources.StringPool;
+import com.android.aapt.Resources.Value;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.ScreenDensity;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
@@ -77,9 +79,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
-import com.google.common.truth.Truth8;
 import com.google.protobuf.ByteString;
+import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.junit.Test;
@@ -101,7 +104,8 @@ public class ScreenDensityResourcesSplitterTest {
       new ScreenDensityResourcesSplitter(
           BundleToolVersion.getCurrentVersion(),
           NO_RESOURCES_PINNED_TO_MASTER,
-          NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER);
+          NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+          /* pinLowestBucketOfStylesToMaster= */ false);
 
   @DataPoints("bundleFeatureEnabled")
   public static final ImmutableSet<Boolean> BUNDLE_FEATURE_ENABLED_DATA_POINTS =
@@ -125,6 +129,7 @@ public class ScreenDensityResourcesSplitterTest {
             .addFile("res/drawable/test.jpg")
             .setResourceTable(
                 resourceTable(
+                    StringPool.newBuilder().setData(ByteString.copyFrom(new byte[] {'x'})).build(),
                     pkg(
                         USER_PACKAGE_OFFSET,
                         "com.test.app",
@@ -145,6 +150,44 @@ public class ScreenDensityResourcesSplitterTest {
     ImmutableCollection<ModuleSplit> splits = splitter.split(resourcesModule);
     assertThat(splits).hasSize(1);
 
+    ModuleSplit baseSplit = splits.iterator().next();
+    assertThat(baseSplit.getResourceTable().get()).containsResource("com.test.app:drawable/test");
+    assertThat(baseSplit.findEntry("res/drawable/test.jpg")).isPresent();
+  }
+
+  @Test
+  public void noDensityResources_noDensitySplits_preFixSkipGeneratingEmptyDensitySplits() {
+    BundleModule testModule =
+        new BundleModuleBuilder("testModule")
+            .addFile("res/drawable/test.jpg")
+            .setResourceTable(
+                resourceTable(
+                    pkg(
+                        USER_PACKAGE_OFFSET,
+                        "com.test.app",
+                        type(
+                            0x01,
+                            "drawable",
+                            entry(
+                                0x01,
+                                "test",
+                                fileReference(
+                                    "res/drawable/test.jpg",
+                                    Configuration.getDefaultInstance()))))))
+            .setManifest(androidManifest("com.test.app"))
+            .build();
+    ModuleSplit resourcesModule = ModuleSplit.forResources(testModule);
+    ScreenDensityResourcesSplitter splitter =
+        new ScreenDensityResourcesSplitter(
+            // Fix was introduced in 1.15.1
+            Version.of("1.15.0"),
+            NO_RESOURCES_PINNED_TO_MASTER,
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster= */ false);
+
+    ImmutableCollection<ModuleSplit> splits = splitter.split(resourcesModule);
+
+    assertThat(splits).hasSize(1);
     ModuleSplit baseSplit = splits.iterator().next();
     assertThat(baseSplit.getResourceTable().get()).containsResource("com.test.app:drawable/test");
     assertThat(baseSplit.findEntry("res/drawable/test.jpg")).isPresent();
@@ -280,6 +323,41 @@ public class ScreenDensityResourcesSplitterTest {
         new ResourceTableBuilder()
                 .addPackage("com.test.app")
                 .addDrawableResourceForMultipleDensities(
+                    "image",
+                    ImmutableMap.of(
+                        MDPI_VALUE,
+                        "res/drawable-mdpi/image.jpg",
+                        XHDPI_VALUE,
+                        "res/drawable-xhdpi/image.jpg"))
+                .build()
+                .toBuilder()
+                .setSourcePool(sourcePool)
+                .build();
+    BundleModule testModule =
+        new BundleModuleBuilder("testModule")
+            .addFile("res/drawable-mdpi/test.jpg")
+            .setResourceTable(table)
+            .setManifest(androidManifest("com.test.app"))
+            .build();
+
+    ImmutableCollection<ModuleSplit> densitySplits =
+        splitter.split(ModuleSplit.forResources(testModule));
+    assertThat(densitySplits).hasSize(DEFAULT_DENSITY_BUCKETS.size() + 1);
+
+    for (ModuleSplit densitySplit : densitySplits) {
+      assertThat(densitySplit.getResourceTable()).isPresent();
+      assertThat(densitySplit.getResourceTable().get().getSourcePool()).isEqualTo(sourcePool);
+    }
+  }
+
+  @Test
+  public void generateAllDensitySplitsBeforeDensitySplitGenerationFix() {
+    StringPool sourcePool =
+        StringPool.newBuilder().setData(ByteString.copyFrom(new byte[] {'x'})).build();
+    ResourceTable table =
+        new ResourceTableBuilder()
+                .addPackage("com.test.app")
+                .addDrawableResourceForMultipleDensities(
                     "image", ImmutableMap.of(MDPI_VALUE, "res/drawable-mdpi/image.jpg"))
                 .build()
                 .toBuilder()
@@ -291,6 +369,13 @@ public class ScreenDensityResourcesSplitterTest {
             .setResourceTable(table)
             .setManifest(androidManifest("com.test.app"))
             .build();
+    ScreenDensityResourcesSplitter splitter =
+        new ScreenDensityResourcesSplitter(
+            // Fix was introduced in 1.15.1
+            Version.of("1.15.0"),
+            NO_RESOURCES_PINNED_TO_MASTER,
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster= */ false);
 
     ImmutableCollection<ModuleSplit> densitySplits =
         splitter.split(ModuleSplit.forResources(testModule));
@@ -511,7 +596,8 @@ public class ScreenDensityResourcesSplitterTest {
             ImmutableSet.of(DensityAlias.XXHDPI, DensityAlias.XXXHDPI),
             BundleToolVersion.getCurrentVersion(),
             NO_RESOURCES_PINNED_TO_MASTER,
-            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER);
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster =*/ false);
     ImmutableCollection<ModuleSplit> densitySplits =
         splitter.split(ModuleSplit.forResources(module));
 
@@ -532,7 +618,7 @@ public class ScreenDensityResourcesSplitterTest {
     ModuleSplit xxhdpiSplit =
         findModuleSplitWithScreenDensityTargeting(
             densitySplits, ScreenDensity.newBuilder().setDensityAlias(DensityAlias.XXHDPI).build());
-    Truth8.assertThat(xxhdpiSplit.getResourceTable()).isPresent();
+    assertThat(xxhdpiSplit.getResourceTable()).isPresent();
     ResourceTable xxHdpiResourceTable = xxhdpiSplit.getResourceTable().get();
 
     assertThat(xxHdpiResourceTable)
@@ -703,7 +789,8 @@ public class ScreenDensityResourcesSplitterTest {
         new ScreenDensityResourcesSplitter(
             Version.of("0.3.3"),
             NO_RESOURCES_PINNED_TO_MASTER,
-            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER);
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster= */ false);
     ImmutableCollection<ModuleSplit> splits = splitter.split(ModuleSplit.forResources(module));
 
     // Master split: Resource present with default targeting.
@@ -787,7 +874,8 @@ public class ScreenDensityResourcesSplitterTest {
         new ScreenDensityResourcesSplitter(
             Version.of(bundleFeatureEnabled ? "0.4.0" : "0.3.3"),
             NO_RESOURCES_PINNED_TO_MASTER,
-            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER);
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster= */ false);
     ImmutableCollection<ModuleSplit> splits = splitter.split(ModuleSplit.forResources(module));
 
     if (bundleFeatureEnabled) {
@@ -881,7 +969,7 @@ public class ScreenDensityResourcesSplitterTest {
     for (ModuleSplit configSplit : configSplits) {
       assertThat(
               compareManifestMutators(
-                  configSplit.getMasterManifestMutators(), withSplitsRequired(true)))
+                  configSplit.getMasterManifestMutators(), withSplitsRequired(/* value= */ true)))
           .isTrue();
     }
   }
@@ -917,7 +1005,8 @@ public class ScreenDensityResourcesSplitterTest {
         new ScreenDensityResourcesSplitter(
             BundleToolVersion.getCurrentVersion(),
             masterResourcesPredicate,
-            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER);
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster= */ false);
 
     ImmutableCollection<ModuleSplit> densitySplits =
         splitter.split(ModuleSplit.forResources(testModule));
@@ -968,7 +1057,8 @@ public class ScreenDensityResourcesSplitterTest {
         new ScreenDensityResourcesSplitter(
             BundleToolVersion.getCurrentVersion(),
             NO_RESOURCES_PINNED_TO_MASTER,
-            pinnedLowDensityResourcesPredicate);
+            pinnedLowDensityResourcesPredicate,
+            /* pinLowestBucketOfStylesToMaster= */ false);
 
     ImmutableCollection<ModuleSplit> densitySplits =
         splitter.split(ModuleSplit.forResources(testModule));
@@ -985,6 +1075,78 @@ public class ScreenDensityResourcesSplitterTest {
       assertThat(extractPaths(configSplit.getEntries()))
           .doesNotContain("res/drawable-mdpi/image.jpg");
     }
+  }
+
+  @Test
+  public void lowestDensityStylesPinnedToMaster_enabled() throws Exception {
+    BundleModule testModule =
+        new BundleModuleBuilder("testModule")
+            .setResourceTable(
+                new ResourceTableBuilder()
+                    .addPackage("com.test.app")
+                    .addResource(
+                        "style",
+                        "title_text_size",
+                        configValueWithDensity("320dens", Optional.of(XHDPI)),
+                        configValueWithDensity("default", Optional.empty()))
+                    .build())
+            .setManifest(androidManifest("com.test.app"))
+            .build();
+
+    ScreenDensityResourcesSplitter splitter =
+        new ScreenDensityResourcesSplitter(
+            BundleToolVersion.getCurrentVersion(),
+            NO_RESOURCES_PINNED_TO_MASTER,
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster= */ true);
+
+    ImmutableCollection<ModuleSplit> splits = splitter.split(ModuleSplit.forResources(testModule));
+
+    ModuleSplit masterSplit =
+        splits.stream().filter(ModuleSplit::isMasterSplit).collect(onlyElement());
+    assertThat(extractStyleValues(masterSplit, "title_text_size")).containsExactly("default");
+
+    ModuleSplit xhdpiSplit = extractDensityTargetingModule(splits, DensityAlias.XXHDPI).get();
+    assertThat(extractStyleValues(xhdpiSplit, "title_text_size")).containsExactly("320dens");
+
+    Optional<ModuleSplit> mdpiSplit = extractDensityTargetingModule(splits, DensityAlias.MDPI);
+    assertThat(mdpiSplit).isEmpty();
+  }
+
+  @Test
+  public void lowestDensityStylesPinnedToMaster_disabled() throws Exception {
+    BundleModule testModule =
+        new BundleModuleBuilder("testModule")
+            .setResourceTable(
+                new ResourceTableBuilder()
+                    .addPackage("com.test.app")
+                    .addResource(
+                        "style",
+                        "title_text_size",
+                        configValueWithDensity("320dens", Optional.of(XHDPI)),
+                        configValueWithDensity("default", Optional.empty()))
+                    .build())
+            .setManifest(androidManifest("com.test.app"))
+            .build();
+
+    ScreenDensityResourcesSplitter splitter =
+        new ScreenDensityResourcesSplitter(
+            BundleToolVersion.getCurrentVersion(),
+            NO_RESOURCES_PINNED_TO_MASTER,
+            NO_LOW_DENSITY_CONFIG_PINNED_TO_MASTER,
+            /* pinLowestBucketOfStylesToMaster= */ false);
+
+    ImmutableCollection<ModuleSplit> splits = splitter.split(ModuleSplit.forResources(testModule));
+
+    ModuleSplit masterSplit =
+        splits.stream().filter(ModuleSplit::isMasterSplit).collect(onlyElement());
+    assertThat(extractStyleValues(masterSplit, "title_text_size")).isEmpty();
+
+    ModuleSplit xhdpiSplit = extractDensityTargetingModule(splits, DensityAlias.XXHDPI).get();
+    assertThat(extractStyleValues(xhdpiSplit, "title_text_size")).containsExactly("320dens");
+
+    ModuleSplit mdpiSplit = extractDensityTargetingModule(splits, DensityAlias.MDPI).get();
+    assertThat(extractStyleValues(mdpiSplit, "title_text_size")).containsExactly("default");
   }
 
   @Test
@@ -1023,7 +1185,8 @@ public class ScreenDensityResourcesSplitterTest {
         new ScreenDensityResourcesSplitter(
             BundleToolVersion.getCurrentVersion(),
             NO_RESOURCES_PINNED_TO_MASTER,
-            pinnedLowDensityResourcesPredicate);
+            pinnedLowDensityResourcesPredicate,
+            /* pinLowestBucketOfStylesToMaster= */ false);
 
     ImmutableCollection<ModuleSplit> densitySplits =
         splitter.split(ModuleSplit.forResources(testModule));
@@ -1092,7 +1255,8 @@ public class ScreenDensityResourcesSplitterTest {
         new ScreenDensityResourcesSplitter(
             BundleToolVersion.getCurrentVersion(),
             NO_RESOURCES_PINNED_TO_MASTER,
-            pinnedLowDensityResourcesPredicate);
+            pinnedLowDensityResourcesPredicate,
+            /* pinLowestBucketOfStylesToMaster= */ false);
 
     ImmutableCollection<ModuleSplit> densitySplits =
         splitter.split(ModuleSplit.forResources(testModule));
@@ -1117,6 +1281,40 @@ public class ScreenDensityResourcesSplitterTest {
               .contains("res/drawable-xxxhdpi/image.jpg");
       }
     }
+  }
+
+  private static ConfigValue configValueWithDensity(String value, Optional<Configuration> density) {
+    return ConfigValue.newBuilder()
+        .setConfig(density.orElse(Configuration.getDefaultInstance()))
+        .setValue(
+            Value.newBuilder()
+                .setItem(
+                    Item.newBuilder()
+                        .setStr(com.android.aapt.Resources.String.newBuilder().setValue(value))))
+        .build();
+  }
+
+  private static ImmutableList<String> extractStyleValues(
+      ModuleSplit moduleSplit, String styleName) {
+    return moduleSplit.getResourceTable().get().getPackageList().stream()
+        .flatMap(pack -> pack.getTypeList().stream())
+        .filter(type -> "style".equals(type.getName()))
+        .flatMap(type -> type.getEntryList().stream())
+        .filter(entry -> styleName.equals(entry.getName()))
+        .flatMap(entry -> entry.getConfigValueList().stream())
+        .map(value -> value.getValue().getItem().getStr().getValue())
+        .collect(toImmutableList());
+  }
+
+  private static Optional<ModuleSplit> extractDensityTargetingModule(
+      Collection<ModuleSplit> modules, DensityAlias targeting) {
+    return modules.stream()
+        .filter(
+            moduleSplit ->
+                moduleSplit.getApkTargeting().getScreenDensityTargeting().getValueList().stream()
+                    .map(ScreenDensity::getDensityAlias)
+                    .anyMatch(targeting::equals))
+        .findFirst();
   }
 
   private static ModuleSplit findModuleSplitWithScreenDensityTargeting(

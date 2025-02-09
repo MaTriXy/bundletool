@@ -18,15 +18,20 @@ package com.android.tools.build.bundletool.model;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import com.android.tools.build.bundletool.model.ModuleEntry.ModuleEntryLocationInZipSource;
 import com.google.auto.value.AutoValue;
+import com.google.auto.value.extension.memoized.Memoized;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.io.ByteSource;
 import com.google.errorprone.annotations.Immutable;
+import java.nio.file.Paths;
 import java.util.Optional;
 
 /** Holder of the App Bundle metadata. */
 @Immutable
 @AutoValue
 @AutoValue.CopyAnnotations
+@SuppressWarnings("Immutable")
 public abstract class BundleMetadata {
 
   /** Namespaced directory where files used by BundleTool are stored. */
@@ -34,23 +39,61 @@ public abstract class BundleMetadata {
 
   public static final String MAIN_DEX_LIST_FILE_NAME = "mainDexList.txt";
 
+  /** Namespaced directory where the proguard map, if any, is stored. */
+  public static final String OBFUSCATION_NAMESPACE = "com.android.tools.build.obfuscation";
+
+  public static final String PROGUARD_MAP_FILE_NAME = "proguard.map";
+
+  public static final String TRANSPARENCY_SIGNED_FILE_NAME = "code_transparency_signed.jwt";
+
+  public static final String DEVICE_GROUP_CONFIG_JSON_FILE_NAME = "DeviceGroupConfig.json";
+  public static final String DEVICE_GROUP_CONFIG_PB_FILE_NAME = "DeviceGroupConfig.pb";
+
+  // For existing references in external test code.
+  public static final String DEVICE_GROUP_CONFIG_FILE_NAME = DEVICE_GROUP_CONFIG_JSON_FILE_NAME;
+
   /**
    * Returns the raw metadata map.
    *
    * <p>Keys are in format {@code <namespaced-dir>/<file-name>}.
    */
-  public abstract ImmutableMap<ZipPath, InputStreamSupplier> getFileDataMap();
+  public abstract ImmutableMap<ZipPath, ByteSource> getFileContentMap();
+
+  public Builder toBuilder() {
+    Builder builder = autoToBuilder();
+    builder.fileContentMapBuilder().putAll(getFileContentMap());
+    return builder;
+  }
+
+  abstract Builder autoToBuilder();
 
   public static Builder builder() {
     return new AutoValue_BundleMetadata.Builder();
   }
 
   /** Gets contents of metadata file {@code <namespaced-dir>/<file-name>}, if it exists. */
-  public Optional<InputStreamSupplier> getFileData(String namespacedDir, String fileName) {
-    return Optional.ofNullable(getFileDataMap().get(toMetadataPath(namespacedDir, fileName)));
+  public Optional<ByteSource> getFileAsByteSource(String namespacedDir, String fileName) {
+    return Optional.ofNullable(getFileContentMap().get(toMetadataPath(namespacedDir, fileName)));
   }
 
-  /** Converts the arguments to a valid key for {@link #getFileDataMap()}. */
+  @Memoized
+  public Optional<ModuleEntry> getModuleEntryForSignedTransparencyFile() {
+    return getFileAsByteSource(BUNDLETOOL_NAMESPACE, TRANSPARENCY_SIGNED_FILE_NAME)
+        .map(
+            transparencySignedFileContent ->
+                ModuleEntry.builder()
+                    .setContent(transparencySignedFileContent)
+                    .setFileLocation(
+                        ModuleEntryLocationInZipSource.create(
+                            Paths.get(""),
+                            ZipPath.create("BUNDLE-METADATA")
+                                .resolve(BUNDLETOOL_NAMESPACE)
+                                .resolve(TRANSPARENCY_SIGNED_FILE_NAME)))
+                    .setPath(ZipPath.create("META-INF").resolve(TRANSPARENCY_SIGNED_FILE_NAME))
+                    .build());
+  }
+
+  /** Converts the arguments to a valid key for {@link #getFileContentMap()}. */
   private static ZipPath toMetadataPath(String namespacedDir, String fileName) {
     return checkMetadataPath(ZipPath.create(namespacedDir).resolve(fileName));
   }
@@ -70,12 +113,12 @@ public abstract class BundleMetadata {
   @AutoValue.Builder
   public abstract static class Builder {
 
-    abstract ImmutableMap.Builder<ZipPath, InputStreamSupplier> fileDataMapBuilder();
+    private final ImmutableMap.Builder<ZipPath, ByteSource> fileContentMapBuilder =
+        ImmutableMap.builder();
 
     /** Adds metadata file {@code <namespaced-dir>/<file-name>}. */
-    public Builder addFile(
-        String namespacedDir, String fileName, InputStreamSupplier dataSupplier) {
-      return addFile(toMetadataPath(namespacedDir, fileName), dataSupplier);
+    public Builder addFile(String namespacedDir, String fileName, ByteSource content) {
+      return addFile(toMetadataPath(namespacedDir, fileName), content);
     }
 
     /**
@@ -83,11 +126,30 @@ public abstract class BundleMetadata {
      *
      * @param path path of the file inside the bundle metadata directory
      */
-    public Builder addFile(ZipPath path, InputStreamSupplier dataSupplier) {
-      fileDataMapBuilder().put(checkMetadataPath(path), dataSupplier);
+    public Builder addFile(ZipPath path, ByteSource content) {
+      fileContentMapBuilder.put(checkMetadataPath(path), content);
       return this;
     }
 
-    public abstract BundleMetadata build();
+    /** Returns a builder for the file content map. */
+    public ImmutableMap.Builder<ZipPath, ByteSource> fileContentMapBuilder() {
+      return fileContentMapBuilder;
+    }
+
+    abstract Builder setFileContentMap(ImmutableMap<ZipPath, ByteSource> fileContentMap);
+
+    abstract BundleMetadata autoBuild();
+
+    /** Build the file content map, throwing an exception if any key was added more than once. */
+    public BundleMetadata build() {
+      setFileContentMap(fileContentMapBuilder.buildOrThrow());
+      return autoBuild();
+    }
+
+    /** Build the file content map, keeping the last entry if any key was added more than once. */
+    public BundleMetadata buildKeepingLast() {
+      setFileContentMap(fileContentMapBuilder.buildKeepingLast());
+      return autoBuild();
+    }
   }
 }

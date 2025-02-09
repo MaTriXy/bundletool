@@ -17,6 +17,7 @@
 package com.android.tools.build.bundletool.mergers;
 
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.ModuleSplitUtils.createAssetsDirectoryLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.ModuleSplitUtils.createModuleSplitBuilder;
 import static com.android.tools.build.bundletool.testing.ResourcesTableFactory.USER_PACKAGE_OFFSET;
 import static com.android.tools.build.bundletool.testing.ResourcesTableFactory.entry;
@@ -28,24 +29,27 @@ import static com.android.tools.build.bundletool.testing.TargetingUtils.lPlusVar
 import static com.android.tools.build.bundletool.testing.TargetingUtils.nativeDirectoryTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.nativeLibraries;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedNativeDirectory;
+import static com.android.tools.build.bundletool.testing.TestUtils.createModuleEntryForFile;
 import static com.android.tools.build.bundletool.testing.TestUtils.extractPaths;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.android.bundle.Files.Assets;
+import com.android.bundle.Files.TargetedAssetsDirectory;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.model.AndroidManifest;
 import com.android.tools.build.bundletool.model.BundleModuleName;
-import com.android.tools.build.bundletool.model.InMemoryModuleEntry;
 import com.android.tools.build.bundletool.model.ModuleSplit;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -53,7 +57,7 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class SameTargetingMergerTest {
 
-  private static final byte[] DUMMY_CONTENT = new byte[1];
+  private static final byte[] TEST_CONTENT = new byte[1];
 
   private static final AndroidManifest DEFAULT_MANIFEST =
       AndroidManifest.create(androidManifest("com.test.app"));
@@ -63,15 +67,14 @@ public class SameTargetingMergerTest {
     ModuleSplit moduleSplit =
         createModuleSplitBuilder()
             .setEntries(
-                ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("assets/some_asset.txt", DUMMY_CONTENT)))
+                ImmutableList.of(createModuleEntryForFile("assets/some_asset.txt", TEST_CONTENT)))
             .setApkTargeting(ApkTargeting.getDefaultInstance())
             .build();
     ModuleSplit moduleSplit2 =
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("assets/some_other_asset.txt", DUMMY_CONTENT)))
+                    createModuleEntryForFile("assets/some_other_asset.txt", TEST_CONTENT)))
             .setApkTargeting(ApkTargeting.getDefaultInstance())
             .build();
 
@@ -96,7 +99,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("testModule/lib/x86/liba.so", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/lib/x86/liba.so", TEST_CONTENT)))
             .setMasterSplit(false)
             .setApkTargeting(apkAbiTargeting(ImmutableSet.of(AbiAlias.X86), abis))
             .build();
@@ -104,7 +107,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("testModule/lib/armv7-eabi/liba.so", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/lib/armv7-eabi/liba.so", TEST_CONTENT)))
             .setMasterSplit(false)
             .setApkTargeting(apkAbiTargeting(ImmutableSet.of(AbiAlias.ARMEABI), abis))
             .build();
@@ -112,7 +115,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("testModule/lib/mips/liba.so", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/lib/mips/liba.so", TEST_CONTENT)))
             .setMasterSplit(false)
             .setApkTargeting(apkAbiTargeting(ImmutableSet.of(AbiAlias.MIPS), abis))
             .build();
@@ -120,7 +123,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("testModule/lib/x86/libb.so", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/lib/x86/libb.so", TEST_CONTENT)))
             .setMasterSplit(false)
             .setApkTargeting(apkAbiTargeting(ImmutableSet.of(AbiAlias.X86), abis))
             .build();
@@ -128,7 +131,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("testModule/lib/armv7-eabi/libb.so", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/lib/armv7-eabi/libb.so", TEST_CONTENT)))
             .setMasterSplit(false)
             .setApkTargeting(apkAbiTargeting(ImmutableSet.of(AbiAlias.ARMEABI), abis))
             .build();
@@ -136,7 +139,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile("testModule/lib/mips/libb.so", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/lib/mips/libb.so", TEST_CONTENT)))
             .setMasterSplit(false)
             .setApkTargeting(apkAbiTargeting(ImmutableSet.of(AbiAlias.MIPS), abis))
             .build();
@@ -199,8 +202,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile(
-                        "testModule/res/drawable/image1.jpg", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/res/drawable/image1.jpg", TEST_CONTENT)))
             .setResourceTable(
                 resourceTable(
                     pkg(
@@ -212,8 +214,7 @@ public class SameTargetingMergerTest {
         createModuleSplitBuilder()
             .setEntries(
                 ImmutableList.of(
-                    InMemoryModuleEntry.ofFile(
-                        "testModule/res/drawable/image2.jpg", DUMMY_CONTENT)))
+                    createModuleEntryForFile("testModule/res/drawable/image2.jpg", TEST_CONTENT)))
             .setResourceTable(
                 resourceTable(
                     pkg(
@@ -315,5 +316,185 @@ public class SameTargetingMergerTest {
     assertThat(exception)
         .hasMessageThat()
         .contains("SameTargetingMerger doesn't support merging splits from different variants.");
+  }
+
+  @Test
+  public void assetsConfigMerging_mergeDisjointAssets() throws Exception {
+    ModuleSplit moduleSplit =
+        createModuleSplitBuilder()
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile("assets/some_assets/file.txt", TEST_CONTENT)))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setAssetsConfig(
+                Assets.newBuilder()
+                    .addDirectory(
+                        TargetedAssetsDirectory.newBuilder().setPath("assets/some_assets").build())
+                    .build())
+            .build();
+    ModuleSplit moduleSplit2 =
+        createModuleSplitBuilder()
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile("assets/some_other_assets/file.txt", TEST_CONTENT)))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setAssetsConfig(
+                Assets.newBuilder()
+                    .addDirectory(
+                        TargetedAssetsDirectory.newBuilder()
+                            .setPath("assets/some_other_assets")
+                            .build())
+                    .build())
+            .build();
+
+    ImmutableCollection<ModuleSplit> splits =
+        new SameTargetingMerger().merge(ImmutableList.of(moduleSplit, moduleSplit2));
+
+    assertThat(splits).hasSize(1);
+    ModuleSplit masterSplit = splits.iterator().next();
+    assertThat(extractPaths(masterSplit.getEntries()))
+        .containsExactly("assets/some_assets/file.txt", "assets/some_other_assets/file.txt");
+    assertThat(masterSplit.getAssetsConfig()).isPresent();
+    assertThat(
+            masterSplit.getAssetsConfig().get().getDirectoryList().stream()
+                .map(TargetedAssetsDirectory::getPath))
+        .containsExactly("assets/some_assets", "assets/some_other_assets");
+  }
+
+  @Test
+  public void assetsConfigMerging_mergeAssetsWithIntersection() throws Exception {
+    ModuleSplit moduleSplit =
+        createModuleSplitBuilder()
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile("assets/some_assets/file.txt", TEST_CONTENT)))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setAssetsConfig(
+                Assets.newBuilder()
+                    .addDirectory(
+                        TargetedAssetsDirectory.newBuilder()
+                            .setPath("assets/some_assets")
+                            .setTargeting(createAssetsDirectoryLanguageTargeting("de"))
+                            .build())
+                    .build())
+            .build();
+    ModuleSplit moduleSplit2 =
+        createModuleSplitBuilder()
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile("assets/some_assets/file.txt", TEST_CONTENT),
+                    createModuleEntryForFile("assets/some_other_assets/file.txt", TEST_CONTENT)))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setAssetsConfig(
+                Assets.newBuilder()
+                    .addDirectory(
+                        TargetedAssetsDirectory.newBuilder()
+                            .setPath("assets/some_assets")
+                            .setTargeting(createAssetsDirectoryLanguageTargeting("de"))
+                            .build())
+                    .addDirectory(
+                        TargetedAssetsDirectory.newBuilder()
+                            .setPath("assets/some_other_assets")
+                            .build())
+                    .build())
+            .build();
+
+    ImmutableCollection<ModuleSplit> splits =
+        new SameTargetingMerger().merge(ImmutableList.of(moduleSplit, moduleSplit2));
+
+    assertThat(splits).hasSize(1);
+    ModuleSplit masterSplit = splits.iterator().next();
+    assertThat(masterSplit.getAssetsConfig()).isPresent();
+    assertThat(
+            masterSplit.getAssetsConfig().get().getDirectoryList().stream()
+                .map(TargetedAssetsDirectory::getPath))
+        .containsExactly("assets/some_assets", "assets/some_other_assets");
+  }
+
+  @Test
+  public void assetsConfigMerging_throwsIfConflictingAssets() throws Exception {
+    ModuleSplit split1 =
+        createModuleSplitBuilder()
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile("assets/some_assets/file.txt", TEST_CONTENT)))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setAssetsConfig(
+                Assets.newBuilder()
+                    .addDirectory(
+                        TargetedAssetsDirectory.newBuilder()
+                            .setPath("assets/some_assets")
+                            .setTargeting(createAssetsDirectoryLanguageTargeting("en"))
+                            .build())
+                    .build())
+            .build();
+    ModuleSplit split2 =
+        createModuleSplitBuilder()
+            .setEntries(
+                ImmutableList.of(
+                    createModuleEntryForFile("assets/some_assets/file.txt", TEST_CONTENT)))
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setAssetsConfig(
+                Assets.newBuilder()
+                    .addDirectory(
+                        TargetedAssetsDirectory.newBuilder()
+                            .setPath("assets/some_assets")
+                            .setTargeting(createAssetsDirectoryLanguageTargeting("de"))
+                            .build())
+                    .build())
+            .build();
+
+    Throwable exception =
+        assertThrows(
+            InvalidBundleException.class,
+            () -> new SameTargetingMerger().merge(ImmutableList.of(split1, split2)));
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("conflicting targeting values while merging assets config");
+  }
+
+  @Test
+  public void mergeTwoSplits_oneWithSparseEncoding() throws Exception {
+    ModuleSplit split1 = createModuleSplitBuilder().setSparseEncoding(true).build();
+    ModuleSplit split2 = createModuleSplitBuilder().build();
+
+    Throwable exception =
+        assertThrows(
+            IllegalStateException.class,
+            () -> new SameTargetingMerger().merge(ImmutableList.of(split1, split2)));
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Encountered different sparse encoding values while merging.");
+  }
+
+  @Test
+  public void mergeTwoSplits_noSparseEncoding() throws Exception {
+    ModuleSplit moduleSplit =
+        createModuleSplitBuilder().setApkTargeting(ApkTargeting.getDefaultInstance()).build();
+    ModuleSplit moduleSplit2 =
+        createModuleSplitBuilder().setApkTargeting(ApkTargeting.getDefaultInstance()).build();
+
+    ImmutableList<ModuleSplit> splits =
+        new SameTargetingMerger().merge(ImmutableList.of(moduleSplit, moduleSplit2));
+    assertThat(Iterables.getOnlyElement(splits).getSparseEncoding()).isFalse();
+  }
+
+  @Test
+  public void mergeTwoSplits_bothWithSparseEncoding() throws Exception {
+    ModuleSplit moduleSplit =
+        createModuleSplitBuilder()
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setSparseEncoding(true)
+            .build();
+    ModuleSplit moduleSplit2 =
+        createModuleSplitBuilder()
+            .setSparseEncoding(true)
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .build();
+
+    ImmutableList<ModuleSplit> splits =
+        new SameTargetingMerger().merge(ImmutableList.of(moduleSplit, moduleSplit2));
+    assertThat(Iterables.getOnlyElement(splits).getSparseEncoding()).isTrue();
   }
 }

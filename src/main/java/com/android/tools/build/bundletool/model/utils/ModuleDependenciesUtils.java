@@ -27,13 +27,14 @@ import com.android.tools.build.bundletool.model.AndroidManifest;
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.BundleModuleName;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
+import java.util.HashSet;
 import java.util.Set;
 
 /** Helpers related to dependencies of the modules. */
@@ -51,6 +52,16 @@ public final class ModuleDependenciesUtils {
     return dependencyModules.stream()
         .map(module -> appBundle.getModule(BundleModuleName.create(module)))
         .collect(toImmutableSet());
+  }
+
+  public static ImmutableSet<String> getModulesIncludingDependencies(
+      Variant variant, Set<String> requestedModules) {
+    ImmutableMultimap<String, String> adjacencyMap = buildAdjacencyMap(variant);
+    HashSet<String> dependencyModules = new HashSet<>(requestedModules);
+    for (String requestedModuleName : requestedModules) {
+      addModuleDependencies(requestedModuleName, adjacencyMap, dependencyModules);
+    }
+    return ImmutableSet.copyOf(dependencyModules);
   }
 
   /** Builds a map of module dependencies. */
@@ -93,8 +104,8 @@ public final class ModuleDependenciesUtils {
       // Check that module does not declare explicit dependency on the "base" module
       // (whose split ID actually is empty instead of "base" anyway).
       if (moduleDependenciesMap.containsEntry(moduleName, BASE_MODULE_NAME.getName())) {
-        throw ValidationException.builder()
-            .withMessage(
+        throw InvalidBundleException.builder()
+            .withUserMessage(
                 "Module '%s' declares dependency on the '%s' module, which is implicit.",
                 moduleName, BASE_MODULE_NAME)
             .build();

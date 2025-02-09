@@ -16,13 +16,17 @@
 
 package com.android.tools.build.bundletool.model.targeting;
 
+import static com.android.tools.build.bundletool.model.utils.TargetingNormalizer.normalizeAssetsDirectoryTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeCountrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeLanguageTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeTextureCompressionTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.assetsDirectoryTargeting;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.graphicsApiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.countrySetTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceGroupTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.languageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeAssetsTargeting;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.openGlVersionFrom;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.openGlVersionTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.nativeDirectoryTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.textureCompressionTargeting;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -37,11 +41,13 @@ import com.android.bundle.Files.NativeLibraries;
 import com.android.bundle.Files.TargetedApexImage;
 import com.android.bundle.Files.TargetedAssetsDirectory;
 import com.android.bundle.Files.TargetedNativeDirectory;
+import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.AssetsDirectoryTargeting;
+import com.android.bundle.Targeting.Sanitizer.SanitizerAlias;
 import com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias;
 import com.android.tools.build.bundletool.model.AbiName;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -101,11 +107,27 @@ public class TargetingGeneratorTest {
   }
 
   @Test
+  public void generateTargetingForNativeLibraries_sanitizer() throws Exception {
+    NativeLibraries nativeTargeting =
+        generator.generateTargetingForNativeLibraries(ImmutableList.of("lib/arm64-v8a-hwasan"));
+
+    List<TargetedNativeDirectory> directories = nativeTargeting.getDirectoryList();
+    assertThat(directories).hasSize(1);
+    assertThat(directories.get(0))
+        .isEqualTo(
+            TargetedNativeDirectory.newBuilder()
+                .setPath("lib/arm64-v8a-hwasan")
+                .setTargeting(
+                    nativeDirectoryTargeting(AbiAlias.ARM64_V8A, SanitizerAlias.HWADDRESS))
+                .build());
+  }
+
+  @Test
   public void generateTargetingForNativeLibraries_abiBaseNamesDisallowed() throws Exception {
     String directoryName = "lib/ARM64-v8a";
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> generator.generateTargetingForNativeLibraries(ImmutableList.of(directoryName)));
 
     assertThat(exception)
@@ -117,9 +139,9 @@ public class TargetingGeneratorTest {
 
   @Test
   public void generateTargetingForNativeLibraries_baseNameNotAnAbi_throws() throws Exception {
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 generator.generateTargetingForNativeLibraries(
                     ImmutableList.of("lib/non_abi_name")));
@@ -145,7 +167,8 @@ public class TargetingGeneratorTest {
             .collect(toImmutableList());
     checkState(allAbiFiles.size() > 1); // Otherwise this test is useless.
 
-    ApexImages apexImages = generator.generateTargetingForApexImages(allAbiFiles);
+    ApexImages apexImages =
+        generator.generateTargetingForApexImages(allAbiFiles, /* hasBuildInfo= */ true);
 
     List<TargetedApexImage> images = apexImages.getImageList();
     assertThat(images).hasSize(allAbiFiles.size());
@@ -153,12 +176,13 @@ public class TargetingGeneratorTest {
 
   @Test
   public void generateTargetingForApexImages_abiBaseNamesDisallowed() throws Exception {
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 generator.generateTargetingForApexImages(
-                    ImmutableList.of(ZipPath.create("x86.ARM64-v8a.img"))));
+                    ImmutableList.of(ZipPath.create("x86.ARM64-v8a.img")),
+                    /* hasBuildInfo= */ false));
 
     assertThat(exception)
         .hasMessageThat()
@@ -169,12 +193,13 @@ public class TargetingGeneratorTest {
 
   @Test
   public void generateTargetingForApexImages_baseNameNotAnAbi_throws() throws Exception {
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 generator.generateTargetingForApexImages(
-                    ImmutableList.of(ZipPath.create("non_abi_name.img"))));
+                    ImmutableList.of(ZipPath.create("non_abi_name.img")),
+                    /* hasBuildInfo= */ false));
 
     assertThat(exception)
         .hasMessageThat()
@@ -218,51 +243,13 @@ public class TargetingGeneratorTest {
   }
 
   @Test
-  public void generateTargetingForAssets_typeMismatch_leaf() throws Exception {
-    Throwable t =
-        assertThrows(
-            ValidationException.class,
-            () ->
-                new TargetingGenerator()
-                    .generateTargetingForAssets(
-                        ImmutableList.of(
-                            ZipPath.create("assets/world/gfx#opengl_3.0"),
-                            ZipPath.create("assets/world/gfx#tcf_etc1"))));
-    assertThat(t)
-        .hasMessageThat()
-        .contains(
-            "Expected at most one dimension type used for targeting of 'assets/world/gfx'. "
-                + "However, the following dimensions were used: "
-                + "'GRAPHICS_API', 'TEXTURE_COMPRESSION_FORMAT'.");
-  }
-
-  @Test
-  public void generateTargetingForAssets_typeMismatch_midPath() throws Exception {
-    Throwable t =
-        assertThrows(
-            ValidationException.class,
-            () ->
-                new TargetingGenerator()
-                    .generateTargetingForAssets(
-                        ImmutableList.of(
-                            ZipPath.create("assets/world/texture#tcf_etc1/gfx#opengl_3.0"),
-                            ZipPath.create("assets/world/texture#opengl_2.0/gfx#tcf_etc1"))));
-    assertThat(t)
-        .hasMessageThat()
-        .contains(
-            "Expected at most one dimension type used for targeting of 'assets/world/texture'. "
-                + "However, the following dimensions were used: "
-                + "'GRAPHICS_API', 'TEXTURE_COMPRESSION_FORMAT'.");
-  }
-
-  @Test
   public void generateTargetingForAssets_different_types_leaves_ok() throws Exception {
     Assets assetsConfig =
         new TargetingGenerator()
             .generateTargetingForAssets(
                 ImmutableList.of(
                     ZipPath.create("assets/world/texture#tcf_etc1"),
-                    ZipPath.create("assets/world/alternative/texture#opengl_3.0")));
+                    ZipPath.create("assets/world/i18n#lang_en")));
     assertThat(assetsConfig)
         .ignoringRepeatedFieldOrder()
         .isEqualTo(
@@ -276,9 +263,8 @@ public class TargetingGeneratorTest {
                                     TextureCompressionFormatAlias.ETC1_RGB8))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/alternative/texture#opengl_3.0")
-                        .setTargeting(
-                            assetsDirectoryTargeting(graphicsApiTargeting(openGlVersionFrom(3)))))
+                        .setPath("assets/world/i18n#lang_en")
+                        .setTargeting(assetsDirectoryTargeting(languageTargeting("en"))))
                 .build());
   }
 
@@ -288,36 +274,30 @@ public class TargetingGeneratorTest {
         new TargetingGenerator()
             .generateTargetingForAssets(
                 ImmutableList.of(
-                    ZipPath.create("assets/world/texture#tcf_etc1/texture#opengl_3.0"),
-                    ZipPath.create("assets/world/texture#tcf_etc1/texture#opengl_2.0")));
+                    ZipPath.create("assets/world/texture#tcf_etc1/i18n#lang_en"),
+                    ZipPath.create("assets/world/texture#tcf_etc1/i18n#lang_ru")));
     assertThat(assetsConfig)
         .ignoringRepeatedFieldOrder()
         .isEqualTo(
             Assets.newBuilder()
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/texture#opengl_3.0")
+                        .setPath("assets/world/texture#tcf_etc1/i18n#lang_en")
                         .setTargeting(
                             mergeAssetsTargeting(
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8)),
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(3),
-                                        ImmutableSet.of(openGlVersionFrom(2)))))))
+                                assetsDirectoryTargeting(languageTargeting("en")))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/texture#opengl_2.0")
+                        .setPath("assets/world/texture#tcf_etc1/i18n#lang_ru")
                         .setTargeting(
                             mergeAssetsTargeting(
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8)),
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(2),
-                                        ImmutableSet.of(openGlVersionFrom(3)))))))
+                                assetsDirectoryTargeting(languageTargeting("ru")))))
                 .build());
   }
 
@@ -327,46 +307,40 @@ public class TargetingGeneratorTest {
         new TargetingGenerator()
             .generateTargetingForAssets(
                 ImmutableList.of(
-                    ZipPath.create("assets/world/texture#tcf_etc1/gfx#opengl_3.0"),
-                    ZipPath.create("assets/world/texture#tcf_etc1/gfx"),
-                    ZipPath.create("assets/world/texture#tcf_atc/gfx#opengl_2.0"),
-                    ZipPath.create("assets/world/texture#tcf_atc/gfx#opengl_3.0")));
+                    ZipPath.create("assets/world/texture#tcf_etc1/i18n#lang_en"),
+                    ZipPath.create("assets/world/texture#tcf_etc1/i18n"),
+                    ZipPath.create("assets/world/texture#tcf_atc/i18n#lang_en"),
+                    ZipPath.create("assets/world/texture#tcf_atc/i18n#lang_ru")));
     assertThat(assetsConfig)
         .ignoringRepeatedFieldOrder()
         .isEqualTo(
             Assets.newBuilder()
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/gfx#opengl_3.0")
+                        .setPath("assets/world/texture#tcf_etc1/i18n#lang_en")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    graphicsApiTargeting(openGlVersionFrom(3))),
+                                assetsDirectoryTargeting(languageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8,
                                         ImmutableSet.of(TextureCompressionFormatAlias.ATC))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/gfx")
+                        .setPath("assets/world/texture#tcf_etc1/i18n")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    graphicsApiTargeting(
-                                        ImmutableSet.of(), ImmutableSet.of(openGlVersionFrom(3)))),
+                                assetsDirectoryTargeting(alternativeLanguageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8,
                                         ImmutableSet.of(TextureCompressionFormatAlias.ATC))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_atc/gfx#opengl_2.0")
+                        .setPath("assets/world/texture#tcf_atc/i18n#lang_en")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(2),
-                                        ImmutableSet.of(openGlVersionFrom(3)))),
+                                assetsDirectoryTargeting(languageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ATC,
@@ -374,13 +348,10 @@ public class TargetingGeneratorTest {
                                             TextureCompressionFormatAlias.ETC1_RGB8))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_atc/gfx#opengl_3.0")
+                        .setPath("assets/world/texture#tcf_atc/i18n#lang_ru")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(3),
-                                        ImmutableSet.of(openGlVersionFrom(2)))),
+                                assetsDirectoryTargeting(languageTargeting("ru")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ATC,
@@ -395,46 +366,40 @@ public class TargetingGeneratorTest {
         new TargetingGenerator()
             .generateTargetingForAssets(
                 ImmutableList.of(
-                    ZipPath.create("assets/world/texture#tcf_atc/gfx#opengl_3.0"),
-                    ZipPath.create("assets/world/texture#tcf_atc/gfx#opengl_2.0"),
-                    ZipPath.create("assets/world/texture#tcf_etc1/gfx"),
-                    ZipPath.create("assets/world/texture#tcf_etc1/gfx#opengl_3.0")));
+                    ZipPath.create("assets/world/texture#tcf_atc/i18n#lang_en"),
+                    ZipPath.create("assets/world/texture#tcf_atc/i18n#lang_ru"),
+                    ZipPath.create("assets/world/texture#tcf_etc1/i18n"),
+                    ZipPath.create("assets/world/texture#tcf_etc1/i18n#lang_en")));
     assertThat(assetsConfig)
         .ignoringRepeatedFieldOrder()
         .isEqualTo(
             Assets.newBuilder()
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/gfx#opengl_3.0")
+                        .setPath("assets/world/texture#tcf_etc1/i18n#lang_en")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    graphicsApiTargeting(openGlVersionFrom(3))),
+                                assetsDirectoryTargeting(languageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8,
                                         ImmutableSet.of(TextureCompressionFormatAlias.ATC))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/gfx")
+                        .setPath("assets/world/texture#tcf_etc1/i18n")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    graphicsApiTargeting(
-                                        ImmutableSet.of(), ImmutableSet.of(openGlVersionFrom(3)))),
+                                assetsDirectoryTargeting(alternativeLanguageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8,
                                         ImmutableSet.of(TextureCompressionFormatAlias.ATC))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_atc/gfx#opengl_2.0")
+                        .setPath("assets/world/texture#tcf_atc/i18n#lang_ru")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(2),
-                                        ImmutableSet.of(openGlVersionFrom(3)))),
+                                assetsDirectoryTargeting(languageTargeting("ru")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ATC,
@@ -442,13 +407,10 @@ public class TargetingGeneratorTest {
                                             TextureCompressionFormatAlias.ETC1_RGB8))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_atc/gfx#opengl_3.0")
+                        .setPath("assets/world/texture#tcf_atc/i18n#lang_en")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(3),
-                                        ImmutableSet.of(openGlVersionFrom(2)))),
+                                assetsDirectoryTargeting(languageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ATC,
@@ -463,46 +425,41 @@ public class TargetingGeneratorTest {
         new TargetingGenerator()
             .generateTargetingForAssets(
                 ImmutableList.of(
-                    ZipPath.create("assets/world/texture#tcf_atc/rest/gfx#opengl_3.0"),
-                    ZipPath.create("assets/world/texture#tcf_atc/rest/gfx#opengl_2.0"),
+                    ZipPath.create("assets/world/texture#tcf_atc/rest/i18n#lang_en"),
+                    ZipPath.create("assets/world/texture#tcf_atc/rest/i18n#lang_ru"),
                     // Note that the two below should not have any alternatives for OpenGL version.
-                    ZipPath.create("assets/world/texture#tcf_etc1/rest/gfx#opengl_2.0"),
-                    ZipPath.create("assets/world/texture#tcf_etc1/gfx#opengl_3.0")));
+                    ZipPath.create("assets/world/texture#tcf_etc1/rest/i18n#lang_ru"),
+                    ZipPath.create("assets/world/texture#tcf_etc1/i18n#lang_en")));
     assertThat(assetsConfig)
         .ignoringRepeatedFieldOrder()
         .isEqualTo(
             Assets.newBuilder()
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/gfx#opengl_3.0")
+                        .setPath("assets/world/texture#tcf_etc1/i18n#lang_en")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    graphicsApiTargeting(openGlVersionFrom(3))),
+                                assetsDirectoryTargeting(languageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8,
                                         ImmutableSet.of(TextureCompressionFormatAlias.ATC))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_etc1/rest/gfx#opengl_2.0")
+                        .setPath("assets/world/texture#tcf_etc1/rest/i18n#lang_ru")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    graphicsApiTargeting(openGlVersionFrom(2))),
+                                assetsDirectoryTargeting(languageTargeting("ru")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ETC1_RGB8,
                                         ImmutableSet.of(TextureCompressionFormatAlias.ATC))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_atc/rest/gfx#opengl_2.0")
+                        .setPath("assets/world/texture#tcf_atc/rest/i18n#lang_ru")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(2),
-                                        ImmutableSet.of(openGlVersionFrom(3)))),
+                                assetsDirectoryTargeting(languageTargeting("ru")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ATC,
@@ -510,13 +467,10 @@ public class TargetingGeneratorTest {
                                             TextureCompressionFormatAlias.ETC1_RGB8))))))
                 .addDirectory(
                     TargetedAssetsDirectory.newBuilder()
-                        .setPath("assets/world/texture#tcf_atc/rest/gfx#opengl_3.0")
+                        .setPath("assets/world/texture#tcf_atc/rest/i18n#lang_en")
                         .setTargeting(
                             mergeAssetsTargeting(
-                                assetsDirectoryTargeting(
-                                    openGlVersionTargeting(
-                                        openGlVersionFrom(3),
-                                        ImmutableSet.of(openGlVersionFrom(2)))),
+                                assetsDirectoryTargeting(languageTargeting("en")),
                                 assetsDirectoryTargeting(
                                     textureCompressionTargeting(
                                         TextureCompressionFormatAlias.ATC,
@@ -529,7 +483,7 @@ public class TargetingGeneratorTest {
   public void generateTargetingForAssets_badLanguageTargetingThrows() {
     Throwable exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> {
               new TargetingGenerator()
                   .generateTargetingForAssets(
@@ -595,10 +549,126 @@ public class TargetingGeneratorTest {
   }
 
   @Test
+  public void generateTargetingForAssets_deviceTierTargeting() {
+    Assets assetsConfig =
+        new TargetingGenerator()
+            .generateTargetingForAssets(
+                ImmutableList.of(
+                    ZipPath.create("assets/img#tier_0"),
+                    ZipPath.create("assets/img#tier_1"),
+                    ZipPath.create("assets/img#tier_2")));
+    assertThat(assetsConfig)
+        .ignoringRepeatedFieldOrder()
+        .isEqualTo(
+            Assets.newBuilder()
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#tier_0")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 0, /* alternatives= */ ImmutableList.of(1, 2)))))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#tier_1")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 1, /* alternatives= */ ImmutableList.of(0, 2)))))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#tier_2")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 2, /* alternatives= */ ImmutableList.of(0, 1)))))
+                .build());
+  }
+
+  @Test
+  public void generateTargetingForAssets_deviceGroupTargeting() {
+    Assets assetsConfig =
+        new TargetingGenerator()
+            .generateTargetingForAssets(
+                ImmutableList.of(
+                    ZipPath.create("assets/img#group_a"),
+                    ZipPath.create("assets/img#group_b"),
+                    ZipPath.create("assets/img#group_c")));
+    assertThat(assetsConfig)
+        .ignoringRepeatedFieldOrder()
+        .isEqualTo(
+            Assets.newBuilder()
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#group_a")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                deviceGroupTargeting(
+                                    /* value= */ "a",
+                                    /* alternatives= */ ImmutableList.of("b", "c")))))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#group_b")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                deviceGroupTargeting(
+                                    /* value= */ "b",
+                                    /* alternatives= */ ImmutableList.of("a", "c")))))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#group_c")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                deviceGroupTargeting(
+                                    /* value= */ "c",
+                                    /* alternatives= */ ImmutableList.of("a", "b")))))
+                .build());
+  }
+
+  @Test
+  public void generateTargetingForAssets_countrySetTargeting() {
+    Assets assetsConfig =
+        new TargetingGenerator()
+            .generateTargetingForAssets(
+                ImmutableList.of(
+                    ZipPath.create("assets/img#countries_sea"),
+                    ZipPath.create("assets/img#countries_latam"),
+                    ZipPath.create("assets/img")));
+    assertThat(assetsConfig)
+        .ignoringRepeatedFieldOrder()
+        .isEqualTo(
+            Assets.newBuilder()
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#countries_sea")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "sea",
+                                    /* alternatives= */ ImmutableList.of("latam")))))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#countries_latam")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "latam",
+                                    /* alternatives= */ ImmutableList.of("sea")))))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img")
+                        .setTargeting(
+                            assetsDirectoryTargeting(
+                                alternativeCountrySetTargeting(
+                                    /* alternatives= */ ImmutableList.of("sea", "latam")))))
+                .build());
+  }
+
+  @Test
   public void duplicateTargetingDimensions_throws() throws Exception {
     Throwable t =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 new TargetingGenerator()
                     .generateTargetingForAssets(
@@ -627,6 +697,108 @@ public class TargetingGeneratorTest {
                     TargetedAssetsDirectory.newBuilder()
                         .setPath("assets")
                         .setTargeting(AssetsDirectoryTargeting.getDefaultInstance()))
+                .build());
+  }
+
+  @Test
+  public void generateTargetingForAssets_nestedTargeting() {
+    ImmutableList<ZipPath> assetDirectories =
+        ImmutableList.of(
+            ZipPath.create("assets/img#countries_latam#tcf_astc"),
+            ZipPath.create("assets/img#countries_latam#tcf_pvrtc"),
+            ZipPath.create("assets/img#countries_latam"),
+            ZipPath.create("assets/img#tcf_astc"),
+            ZipPath.create("assets/img#tcf_pvrtc"),
+            ZipPath.create("assets/img"));
+
+    Assets assetsConfig = new TargetingGenerator().generateTargetingForAssets(assetDirectories);
+
+    assertThat(assetsConfig)
+        .ignoringRepeatedFieldOrder()
+        .isEqualTo(
+            Assets.newBuilder()
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#countries_latam#tcf_astc")
+                        .setTargeting(
+                            normalizeAssetsDirectoryTargeting(
+                                AssetsDirectoryTargeting.newBuilder()
+                                    .setCountrySet(countrySetTargeting("latam"))
+                                    .setTextureCompressionFormat(
+                                        textureCompressionTargeting(
+                                            /* value= */ TextureCompressionFormatAlias.ASTC,
+                                            /* alternatives= */ ImmutableSet.of(
+                                                TextureCompressionFormatAlias.PVRTC)))
+                                    .build())))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#countries_latam#tcf_pvrtc")
+                        .setTargeting(
+                            normalizeAssetsDirectoryTargeting(
+                                AssetsDirectoryTargeting.newBuilder()
+                                    .setCountrySet(countrySetTargeting("latam"))
+                                    .setTextureCompressionFormat(
+                                        textureCompressionTargeting(
+                                            /* value= */ TextureCompressionFormatAlias.PVRTC,
+                                            /* alternatives= */ ImmutableSet.of(
+                                                TextureCompressionFormatAlias.ASTC)))
+                                    .build())))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#countries_latam")
+                        .setTargeting(
+                            normalizeAssetsDirectoryTargeting(
+                                AssetsDirectoryTargeting.newBuilder()
+                                    .setCountrySet(countrySetTargeting("latam"))
+                                    .setTextureCompressionFormat(
+                                        alternativeTextureCompressionTargeting(
+                                            TextureCompressionFormatAlias.PVRTC,
+                                            TextureCompressionFormatAlias.ASTC))
+                                    .build())))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#tcf_astc")
+                        .setTargeting(
+                            normalizeAssetsDirectoryTargeting(
+                                AssetsDirectoryTargeting.newBuilder()
+                                    .setCountrySet(
+                                        alternativeCountrySetTargeting(
+                                            /* alternatives= */ ImmutableList.of("latam")))
+                                    .setTextureCompressionFormat(
+                                        textureCompressionTargeting(
+                                            /* value= */ TextureCompressionFormatAlias.ASTC,
+                                            /* alternatives= */ ImmutableSet.of(
+                                                TextureCompressionFormatAlias.PVRTC)))
+                                    .build())))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img#tcf_pvrtc")
+                        .setTargeting(
+                            normalizeAssetsDirectoryTargeting(
+                                AssetsDirectoryTargeting.newBuilder()
+                                    .setCountrySet(
+                                        alternativeCountrySetTargeting(
+                                            /* alternatives= */ ImmutableList.of("latam")))
+                                    .setTextureCompressionFormat(
+                                        textureCompressionTargeting(
+                                            /* value= */ TextureCompressionFormatAlias.PVRTC,
+                                            /* alternatives= */ ImmutableSet.of(
+                                                TextureCompressionFormatAlias.ASTC)))
+                                    .build())))
+                .addDirectory(
+                    TargetedAssetsDirectory.newBuilder()
+                        .setPath("assets/img")
+                        .setTargeting(
+                            normalizeAssetsDirectoryTargeting(
+                                AssetsDirectoryTargeting.newBuilder()
+                                    .setCountrySet(
+                                        alternativeCountrySetTargeting(
+                                            /* alternatives= */ ImmutableList.of("latam")))
+                                    .setTextureCompressionFormat(
+                                        alternativeTextureCompressionTargeting(
+                                            TextureCompressionFormatAlias.PVRTC,
+                                            TextureCompressionFormatAlias.ASTC))
+                                    .build())))
                 .build());
   }
 }

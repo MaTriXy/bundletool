@@ -18,101 +18,109 @@ package com.android.tools.build.bundletool.model;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.io.ByteSource;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
-import java.util.function.Supplier;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
 @RunWith(JUnit4.class)
 public class ModuleEntryTest {
-
   @Test
-  public void equal_differentPath() throws Exception {
-    assertThat(
-            ModuleEntry.equal(
-                createDirectoryEntry(ZipPath.create("a")),
-                createDirectoryEntry(ZipPath.create("b"))))
-        .isFalse();
-  }
+  public void builder() throws Exception {
+    ZipPath path = ZipPath.create("a");
+    byte[] content = new byte[] {'a'};
+    ModuleEntry entry = createEntry(path, content).toBuilder().setForceUncompressed(true).build();
 
-  @Test
-  public void equal_differentType() throws Exception {
-    assertThat(
-            ModuleEntry.equal(
-                createDirectoryEntry(ZipPath.create("a")),
-                createFileEntry(ZipPath.create("a"), new byte[0])))
-        .isFalse();
+    assertThat(entry.getPath()).isEqualTo(path);
+    assertThat(entry.getForceUncompressed()).isTrue();
+    assertThat(entry.getContent().read()).isEqualTo(content);
   }
 
   @Test
-  public void equal_differentFileContents() throws Exception {
-    assertThat(
-            ModuleEntry.equal(
-                createFileEntry(ZipPath.create("a"), new byte[] {'a'}),
-                createFileEntry(ZipPath.create("a"), new byte[] {'b'})))
-        .isFalse();
+  public void builder_defaults() throws Exception {
+    ModuleEntry entry = createEntry(ZipPath.create("a"), new byte[0]);
+    assertThat(entry.getForceUncompressed()).isFalse();
   }
 
   @Test
-  public void equal_sameDirectories() throws Exception {
-    assertThat(
-            ModuleEntry.equal(
-                createDirectoryEntry(ZipPath.create("a")),
-                createDirectoryEntry(ZipPath.create("a"))))
-        .isTrue();
+  public void equals_differentPath() throws Exception {
+    ModuleEntry entry1 = createEntry(ZipPath.create("a"), new byte[0]);
+    ModuleEntry entry2 = createEntry(ZipPath.create("b"), new byte[0]);
+
+    assertThat(entry1.equals(entry2)).isFalse();
   }
 
   @Test
-  public void equal_sameFiles() throws Exception {
-    assertThat(
-            ModuleEntry.equal(
-                createFileEntry(ZipPath.create("a"), new byte[] {'a'}),
-                createFileEntry(ZipPath.create("a"), new byte[] {'a'})))
-        .isTrue();
+  public void equals_differentShouldCompress() throws Exception {
+    ModuleEntry entry1 = createEntry(ZipPath.create("a"), new byte[0]);
+    ModuleEntry entry2 =
+        entry1.toBuilder().setForceUncompressed(!entry1.getForceUncompressed()).build();
+
+    assertThat(entry1.equals(entry2)).isFalse();
   }
 
-  private static ModuleEntry createFileEntry(ZipPath path, byte[] content) throws Exception {
-    return createEntry(path, /* isDirectory= */ false, () -> new ByteArrayInputStream(content));
+  @Test
+  public void equals_differentShouldSign() throws Exception {
+    ModuleEntry entry1 = createEntry(ZipPath.create("a"), new byte[0]);
+    ModuleEntry entry2 = entry1.toBuilder().setShouldSign(!entry1.getShouldSign()).build();
+
+    assertThat(entry1.equals(entry2)).isFalse();
   }
 
-  private static ModuleEntry createDirectoryEntry(ZipPath path) throws Exception {
-    return createEntry(
-        path,
-        /* isDirectory= */ true,
-        () -> {
-          throw new RuntimeException("Why would you want content of a directory?");
-        });
+  @Test
+  public void equals_differentFileContents() throws Exception {
+    ModuleEntry entry1 = createEntry(ZipPath.create("a"), new byte[] {'a'});
+    ModuleEntry entry2 = createEntry(ZipPath.create("a"), new byte[] {'b'});
+
+    assertThat(entry1.equals(entry2)).isFalse();
   }
 
-  private static ModuleEntry createEntry(
-      ZipPath path, boolean isDirectory, Supplier<InputStream> contentSupplier) {
-    return new ModuleEntry() {
-      @Override
-      public InputStream getContent() {
-        return contentSupplier.get();
-      }
+  @Test
+  public void equals_sameFiles() throws Exception {
+    ModuleEntry entry = createEntry(ZipPath.create("a"), new byte[] {'a'});
 
-      @Override
-      public ZipPath getPath() {
-        return path;
-      }
+    assertThat(entry.equals(entry)).isTrue();
+  }
 
-      @Override
-      public boolean isDirectory() {
-        return isDirectory;
-      }
+  @Test
+  public void equals_ensureEntryContentIsReadOnce() throws Exception {
+    ZipPath zipPath = ZipPath.create("a");
+    CountingByteSource content1 = new CountingByteSource(new byte[] {'a'});
+    CountingByteSource content2 = new CountingByteSource(new byte[] {'a'});
 
-      @Override
-      public boolean shouldCompress() {
-        return true;
-      }
+    ModuleEntry entry1 = ModuleEntry.builder().setPath(zipPath).setContent(content1).build();
+    ModuleEntry entry2 = ModuleEntry.builder().setPath(zipPath).setContent(content2).build();
 
-      @Override
-      public ModuleEntry setCompression(boolean shouldCompress) {
-        throw new UnsupportedOperationException();
-      }
-    };
+    for (int i = 0; i < 10; i++) {
+      assertThat(entry1.equals(entry2)).isTrue();
+    }
+    assertThat(content1.getOpenStreamCount()).isEqualTo(1);
+    assertThat(content2.getOpenStreamCount()).isEqualTo(1);
+  }
+
+  private static ModuleEntry createEntry(ZipPath path, byte[] content) throws Exception {
+    return ModuleEntry.builder().setPath(path).setContent(ByteSource.wrap(content)).build();
+  }
+
+  private static class CountingByteSource extends ByteSource {
+    private final byte[] content;
+    private int count;
+
+    CountingByteSource(byte[] content) {
+      this.content = content;
+    }
+
+    int getOpenStreamCount() {
+      return count;
+    }
+
+    @Override
+    public InputStream openStream() throws IOException {
+      count++;
+      return new ByteArrayInputStream(content);
+    }
   }
 }

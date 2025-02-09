@@ -17,14 +17,16 @@
 package com.android.tools.build.bundletool.splitters;
 
 import static com.android.tools.build.bundletool.model.ManifestMutator.withSplitsRequired;
+import static com.android.tools.build.bundletool.model.utils.CollectorUtils.groupingByDeterministic;
 import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.DEFAULT_DENSITY_VALUE;
 import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.MIPMAP_TYPE;
 import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.getLowestDensity;
+import static com.android.tools.build.bundletool.model.version.VersionGuardedFeature.FIX_SKIP_GENERATING_EMPTY_DENSITY_SPLITS;
+import static com.android.tools.build.bundletool.model.version.VersionGuardedFeature.RESOURCES_WITH_NO_ALTERNATIVES_IN_MASTER_SPLIT;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static java.util.stream.Collectors.groupingBy;
 
 import com.android.aapt.ConfigurationOuterClass.Configuration;
 import com.android.aapt.Resources.ConfigValue;
@@ -43,13 +45,13 @@ import com.android.tools.build.bundletool.model.utils.ResourcesUtils;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -68,31 +70,38 @@ public class ScreenDensityResourcesSplitter extends SplitterForOneTargetingDimen
           DensityAlias.XXXHDPI,
           DensityAlias.TVDPI);
 
+  private static final String STYLE_TYPE_NAME = "style";
+
   private final ImmutableSet<DensityAlias> densityBuckets;
   private final Version bundleVersion;
   private final Predicate<ResourceId> pinWholeResourceToMaster;
   private final Predicate<ResourceId> pinLowestBucketOfResourceToMaster;
+  private final boolean pinLowestBucketOfStylesToMaster;
 
   public ScreenDensityResourcesSplitter(
       Version bundleVersion,
       Predicate<ResourceId> pinWholeResourceToMaster,
-      Predicate<ResourceId> pinLowestBucketOfResourceToMaster) {
+      Predicate<ResourceId> pinLowestBucketOfResourceToMaster,
+      boolean pinLowestBucketOfStylesToMaster) {
     this(
         DEFAULT_DENSITY_BUCKETS,
         bundleVersion,
         pinWholeResourceToMaster,
-        pinLowestBucketOfResourceToMaster);
+        pinLowestBucketOfResourceToMaster,
+        pinLowestBucketOfStylesToMaster);
   }
 
   public ScreenDensityResourcesSplitter(
       ImmutableSet<DensityAlias> densityBuckets,
       Version bundleVersion,
       Predicate<ResourceId> pinWholeResourceToMaster,
-      Predicate<ResourceId> pinLowestBucketOfResourceToMaster) {
+      Predicate<ResourceId> pinLowestBucketOfResourceToMaster,
+      boolean pinLowestBucketOfStylesToMaster) {
     this.densityBuckets = densityBuckets;
     this.bundleVersion = bundleVersion;
     this.pinWholeResourceToMaster = pinWholeResourceToMaster;
     this.pinLowestBucketOfResourceToMaster = pinLowestBucketOfResourceToMaster;
+    this.pinLowestBucketOfStylesToMaster = pinLowestBucketOfStylesToMaster;
   }
 
   @Override
@@ -108,17 +117,19 @@ public class ScreenDensityResourcesSplitter extends SplitterForOneTargetingDimen
     ImmutableList.Builder<ModuleSplit> splitsBuilder = new ImmutableList.Builder<>();
     for (DensityAlias density : densityBuckets) {
       ResourceTable optimizedTable = filterResourceTableForDensity(resourceTable.get(), density);
+
       // Don't generate empty splits.
-      if (optimizedTable.equals(ResourceTable.getDefaultInstance())) {
+      if (FIX_SKIP_GENERATING_EMPTY_DENSITY_SPLITS.enabledForVersion(bundleVersion)
+          && optimizedTable.getPackageList().isEmpty()) {
+        continue;
+      } else if (optimizedTable.equals(ResourceTable.getDefaultInstance())) {
         continue;
       }
+
       ModuleSplit.Builder moduleSplitBuilder =
-          split
-              .toBuilder()
+          split.toBuilder()
               .setApkTargeting(
-                  split
-                      .getApkTargeting()
-                      .toBuilder()
+                  split.getApkTargeting().toBuilder()
                       .setScreenDensityTargeting(
                           ScreenDensityTargeting.newBuilder()
                               .addValue(toScreenDensity(density))
@@ -147,8 +158,7 @@ public class ScreenDensityResourcesSplitter extends SplitterForOneTargetingDimen
       ModuleSplit inputSplit, ImmutableCollection<ModuleSplit> densitySplits) {
     ResourceTable defaultSplitTable =
         getResourceTableForDefaultSplit(inputSplit, getClaimedConfigs(densitySplits));
-    return inputSplit
-        .toBuilder()
+    return inputSplit.toBuilder()
         .setEntries(ModuleSplit.filterResourceEntries(inputSplit.getEntries(), defaultSplitTable))
         .setResourceTable(defaultSplitTable)
         .build();
@@ -226,20 +236,21 @@ public class ScreenDensityResourcesSplitter extends SplitterForOneTargetingDimen
   private Entry filterEntryForDensity(ResourceTableEntry tableEntry, DensityAlias targetDensity) {
     Entry initialEntry = tableEntry.getEntry();
     // Groups together configs that only differ on density.
-    Map<Configuration, List<ConfigValue>> configValuesByConfiguration =
+    ImmutableMap<Configuration, ? extends List<ConfigValue>> configValuesByConfiguration =
         initialEntry.getConfigValueList().stream()
-            // Remove this filter entirely once 0.4.0 is no longer being actively used.
             .filter(
                 configValue ->
-                    !bundleVersion.isOlderThan(Version.of("0.4.0"))
+                    RESOURCES_WITH_NO_ALTERNATIVES_IN_MASTER_SPLIT.enabledForVersion(bundleVersion)
                         || configValue.getConfig().getDensity() != DEFAULT_DENSITY_VALUE)
-            .collect(groupingBy(configValue -> clearDensity(configValue.getConfig())));
+            .collect(groupingByDeterministic(configValue -> clearDensity(configValue.getConfig())));
 
     // Filter out configs that don't have alternatives on density. These configurations can go in
     // the master split.
-    if (!bundleVersion.isOlderThan(Version.of("0.4.0"))) {
+    if (RESOURCES_WITH_NO_ALTERNATIVES_IN_MASTER_SPLIT.enabledForVersion(bundleVersion)) {
       configValuesByConfiguration =
-          Maps.filterValues(configValuesByConfiguration, configValues -> configValues.size() > 1);
+          ImmutableMap.copyOf(
+              Maps.filterValues(
+                  configValuesByConfiguration, configValues -> configValues.size() > 1));
     }
 
     ImmutableList<List<ConfigValue>> densityGroups =
@@ -249,7 +260,7 @@ public class ScreenDensityResourcesSplitter extends SplitterForOneTargetingDimen
     Predicate<ConfigValue> pinConfigToMaster;
     if (pinWholeResourceToMaster.test(tableEntry.getResourceId())) {
       pinConfigToMaster = anyConfig -> true;
-    } else if (pinLowestBucketOfResourceToMaster.test(tableEntry.getResourceId())) {
+    } else if (pinLowestBucketToMaster(tableEntry)) {
       ImmutableSet<ConfigValue> lowDensityConfigsPinnedToMaster =
           pickBestDensityForEachGroup(densityGroups, getLowestDensity(densityBuckets))
               .collect(toImmutableSet());
@@ -263,6 +274,11 @@ public class ScreenDensityResourcesSplitter extends SplitterForOneTargetingDimen
             .filter(config -> !pinConfigToMaster.test(config))
             .collect(toImmutableList());
     return initialEntry.toBuilder().clearConfigValue().addAllConfigValue(valuesToKeep).build();
+  }
+
+  private boolean pinLowestBucketToMaster(ResourceTableEntry entry) {
+    return pinLowestBucketOfResourceToMaster.test(entry.getResourceId())
+        || (pinLowestBucketOfStylesToMaster && STYLE_TYPE_NAME.equals(entry.getType().getName()));
   }
 
   /** For each density group, it picks the best match for a given desired densityAlias. */

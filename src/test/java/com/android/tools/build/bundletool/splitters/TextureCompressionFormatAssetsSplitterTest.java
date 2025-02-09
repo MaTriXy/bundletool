@@ -16,6 +16,7 @@
 
 package com.android.tools.build.bundletool.splitters;
 
+import static com.android.tools.build.bundletool.model.BundleModule.ASSETS_DIRECTORY;
 import static com.android.tools.build.bundletool.model.ManifestMutator.withSplitsRequired;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.compareManifestMutators;
@@ -58,7 +59,7 @@ public class TextureCompressionFormatAssetsSplitterTest {
     BundleModule testModule =
         new BundleModuleBuilder("testModule")
             .addFile("assets/images#tcf_etc1/image.jpg")
-            .addFile("assets/images#tcf_three_dc/image.jpg")
+            .addFile("assets/images#tcf_3dc/image.jpg")
             .addFile("assets/file.txt")
             .setAssetsConfig(
                 assets(
@@ -69,7 +70,7 @@ public class TextureCompressionFormatAssetsSplitterTest {
                                 TextureCompressionFormatAlias.ETC1_RGB8,
                                 ImmutableSet.of(TextureCompressionFormatAlias.THREE_DC)))),
                     targetedAssetsDirectory(
-                        "assets/images#tcf_three_dc",
+                        "assets/images#tcf_3dc",
                         assetsDirectoryTargeting(
                             textureCompressionTargeting(
                                 TextureCompressionFormatAlias.THREE_DC,
@@ -81,11 +82,13 @@ public class TextureCompressionFormatAssetsSplitterTest {
 
     ModuleSplit baseSplit = ModuleSplit.forAssets(testModule);
     Collection<ModuleSplit> assetsSplits =
-        TextureCompressionFormatAssetsSplitter.create().split(baseSplit);
+        TextureCompressionFormatAssetsSplitter.create(/* stripTargetingSuffix= */ false)
+            .split(baseSplit);
     assertThat(assetsSplits).hasSize(3);
     List<ModuleSplit> defaultSplits = getSplitsWithDefaultTargeting(assetsSplits);
     assertThat(defaultSplits).hasSize(1);
-    assertThat(extractPaths(defaultSplits.get(0).getEntries())).containsExactly("assets/file.txt");
+    assertThat(extractPaths(defaultSplits.get(0).findEntriesUnderPath(ASSETS_DIRECTORY)))
+        .containsExactly("assets/file.txt");
     List<ModuleSplit> etc1Splits =
         getSplitsWithTargetingEqualTo(
             assetsSplits,
@@ -94,7 +97,7 @@ public class TextureCompressionFormatAssetsSplitterTest {
                     TextureCompressionFormatAlias.ETC1_RGB8,
                     ImmutableSet.of(TextureCompressionFormatAlias.THREE_DC))));
     assertThat(etc1Splits).hasSize(1);
-    assertThat(extractPaths(etc1Splits.get(0).getEntries()))
+    assertThat(extractPaths(etc1Splits.get(0).findEntriesUnderPath(ASSETS_DIRECTORY)))
         .containsExactly("assets/images#tcf_etc1/image.jpg");
     List<ModuleSplit> threeDcSplits =
         getSplitsWithTargetingEqualTo(
@@ -104,9 +107,10 @@ public class TextureCompressionFormatAssetsSplitterTest {
                     TextureCompressionFormatAlias.THREE_DC,
                     ImmutableSet.of(TextureCompressionFormatAlias.ETC1_RGB8))));
     assertThat(threeDcSplits).hasSize(1);
-    assertThat(extractPaths(threeDcSplits.get(0).getEntries()))
-        .containsExactly("assets/images#tcf_three_dc/image.jpg");
+    assertThat(extractPaths(threeDcSplits.get(0).findEntriesUnderPath(ASSETS_DIRECTORY)))
+        .containsExactly("assets/images#tcf_3dc/image.jpg");
   }
+
 
   @Test
   public void manifestMutatorToRequireSplits_notRegistered_whenNoTcfSpecificAssets()
@@ -123,7 +127,8 @@ public class TextureCompressionFormatAssetsSplitterTest {
     ModuleSplit baseSplit = ModuleSplit.forAssets(testModule);
 
     ImmutableCollection<ModuleSplit> assetsSplits =
-        TextureCompressionFormatAssetsSplitter.create().split(baseSplit);
+        TextureCompressionFormatAssetsSplitter.create(/* stripTargetingSuffix= */ false)
+            .split(baseSplit);
 
     assertThat(assetsSplits).hasSize(1);
     assertThat(assetsSplits.asList().get(0).getMasterManifestMutators()).isEmpty();
@@ -148,7 +153,8 @@ public class TextureCompressionFormatAssetsSplitterTest {
     ModuleSplit baseSplit = ModuleSplit.forAssets(testModule);
 
     ImmutableCollection<ModuleSplit> assetsSplits =
-        TextureCompressionFormatAssetsSplitter.create().split(baseSplit);
+        TextureCompressionFormatAssetsSplitter.create(/* stripTargetingSuffix= */ false)
+            .split(baseSplit);
 
     ImmutableList<ModuleSplit> configSplits =
         assetsSplits.stream().filter(split -> !split.isMasterSplit()).collect(toImmutableList());
@@ -157,7 +163,7 @@ public class TextureCompressionFormatAssetsSplitterTest {
     for (ModuleSplit configSplit : configSplits) {
       assertThat(
               compareManifestMutators(
-                  configSplit.getMasterManifestMutators(), withSplitsRequired(true)))
+                  configSplit.getMasterManifestMutators(), withSplitsRequired(/* value= */ true)))
           .isTrue();
     }
   }

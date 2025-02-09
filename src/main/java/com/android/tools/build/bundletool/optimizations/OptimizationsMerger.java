@@ -21,15 +21,22 @@ import static com.android.bundle.Config.SplitDimension.Value.UNSPECIFIED_VALUE;
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Config.Optimizations;
 import com.android.bundle.Config.SplitDimension;
+import com.android.bundle.Config.SplitDimension.Value;
+import com.android.bundle.Config.SuffixStripping;
+import com.android.bundle.Config.UncompressDexFiles.UncompressedDexTargetSdk;
+import com.android.bundle.Config.UncompressNativeLibraries.PageAlignment;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
 import com.android.tools.build.bundletool.model.utils.EnumMapper;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import javax.inject.Inject;
 
 /**
  * Merger of the optimizations instructions supplied by the developer (in the BundleConfig) and the
@@ -37,12 +44,21 @@ import java.util.Set;
  */
 public final class OptimizationsMerger {
 
+  private static final ImmutableSet<SplitDimension.Value> IGNORED_SPLIT_DIMENSION_VALUES =
+      ImmutableSet.<SplitDimension.Value>builder()
+          .add(UNRECOGNIZED)
+          .add(UNSPECIFIED_VALUE)
+          .build();
+
   private static final ImmutableMap<SplitDimension.Value, OptimizationDimension>
       SPLIT_DIMENSION_ENUM_MAP =
           EnumMapper.mapByName(
               SplitDimension.Value.class,
               OptimizationDimension.class,
-              /* ignoreValues= */ ImmutableSet.of(UNRECOGNIZED, UNSPECIFIED_VALUE));
+              IGNORED_SPLIT_DIMENSION_VALUES);
+
+  @Inject
+  public OptimizationsMerger() {}
 
   /**
    * Merges the optimizations instructions supplied by the developer (in the BundleConfig) and the
@@ -76,11 +92,12 @@ public final class OptimizationsMerger {
 
     // Until we get rid of OptimizationsOverride flag, it takes precedence over anything else.
     ImmutableSet<OptimizationDimension> splitDimensions =
-        !optimizationsOverride.isEmpty()
-            ? optimizationsOverride
-            : mergeSplitDimensions(
-                defaultOptimizations.getSplitDimensions(),
-                requestedOptimizations.getSplitsConfig().getSplitDimensionList());
+        getEffectiveSplitDimensions(
+            defaultOptimizations, requestedOptimizations, optimizationsOverride);
+
+    ImmutableSet<OptimizationDimension> standaloneDimensions =
+        getEffectiveStandaloneDimensions(
+            defaultOptimizations, requestedOptimizations, optimizationsOverride);
 
     // If developer sets UncompressNativeLibraries use that, otherwise use the default value.
     boolean uncompressNativeLibraries =
@@ -88,17 +105,56 @@ public final class OptimizationsMerger {
             ? requestedOptimizations.getUncompressNativeLibraries().getEnabled()
             : defaultOptimizations.getUncompressNativeLibraries();
 
-    boolean uncompressDexFiles = requestedOptimizations.getUncompressDexFiles().getEnabled();
+    PageAlignment pageAlignment =
+        requestedOptimizations.getUncompressNativeLibraries().getAlignment()
+                != PageAlignment.PAGE_ALIGNMENT_UNSPECIFIED
+            ? requestedOptimizations.getUncompressNativeLibraries().getAlignment()
+            : defaultOptimizations.getPageAlignment();
+
+    boolean uncompressDexFiles;
+    UncompressedDexTargetSdk uncompressedDexTargetSdk;
+
+    if (requestedOptimizations.hasUncompressDexFiles()) {
+      uncompressDexFiles = requestedOptimizations.getUncompressDexFiles().getEnabled();
+      uncompressedDexTargetSdk =
+          requestedOptimizations.getUncompressDexFiles().getUncompressedDexTargetSdk();
+    } else {
+      uncompressDexFiles = defaultOptimizations.getUncompressDexFiles();
+      uncompressedDexTargetSdk = defaultOptimizations.getUncompressedDexTargetSdk();
+    }
+
+    ImmutableMap<OptimizationDimension, SuffixStripping> suffixStrippings =
+        getSuffixStrippings(
+            bundleConfig.getOptimizations().getSplitsConfig().getSplitDimensionList());
 
     return ApkOptimizations.builder()
         .setSplitDimensions(splitDimensions)
         .setUncompressNativeLibraries(uncompressNativeLibraries)
+        .setPageAlignment(pageAlignment)
         .setUncompressDexFiles(uncompressDexFiles)
+        .setUncompressedDexTargetSdk(uncompressedDexTargetSdk)
+        .setStandaloneDimensions(standaloneDimensions)
+        .setSuffixStrippings(suffixStrippings)
         .build();
   }
 
+  private static ImmutableMap<OptimizationDimension, SuffixStripping> getSuffixStrippings(
+      List<SplitDimension> requestedSplitDimensions) {
+    Map<OptimizationDimension, SuffixStripping> mergedDimensions =
+        new EnumMap<>(OptimizationDimension.class);
 
-  private ImmutableSet<OptimizationDimension> mergeSplitDimensions(
+    for (SplitDimension requestedSplitDimension : requestedSplitDimensions) {
+      OptimizationDimension internalDimension =
+          SPLIT_DIMENSION_ENUM_MAP.get(requestedSplitDimension.getValue());
+      if (!requestedSplitDimension.getNegate()) {
+        mergedDimensions.put(internalDimension, requestedSplitDimension.getSuffixStripping());
+      }
+    }
+
+    return ImmutableMap.copyOf(mergedDimensions);
+  }
+
+  private static ImmutableSet<OptimizationDimension> mergeSplitDimensions(
       ImmutableSet<OptimizationDimension> defaultSplitDimensions,
       List<SplitDimension> requestedSplitDimensions) {
     Set<OptimizationDimension> mergedDimensions = new HashSet<>(defaultSplitDimensions);
@@ -115,5 +171,33 @@ public final class OptimizationsMerger {
 
     return ImmutableSet.copyOf(mergedDimensions);
   }
-  
+
+  private static ImmutableSet<OptimizationDimension> getEffectiveSplitDimensions(
+      ApkOptimizations defaultOptimizations,
+      Optimizations requestedOptimizations,
+      ImmutableSet<OptimizationDimension> optimizationsOverride) {
+    if (!optimizationsOverride.isEmpty()) {
+      return optimizationsOverride;
+    }
+    return mergeSplitDimensions(
+        defaultOptimizations.getSplitDimensions(),
+        requestedOptimizations.getSplitsConfig().getSplitDimensionList());
+  }
+
+  private static ImmutableSet<OptimizationDimension> getEffectiveStandaloneDimensions(
+      ApkOptimizations defaultOptimizations,
+      Optimizations requestedOptimizations,
+      ImmutableSet<OptimizationDimension> optimizationsOverride) {
+    if (!optimizationsOverride.isEmpty()) {
+      return optimizationsOverride;
+    }
+    // Inherit the split config, unless there is an explicit standalone config.
+    List<SplitDimension> userDefinedStandaloneConfig =
+        requestedOptimizations.hasStandaloneConfig()
+            ? requestedOptimizations.getStandaloneConfig().getSplitDimensionList()
+            : requestedOptimizations.getSplitsConfig().getSplitDimensionList();
+
+    return mergeSplitDimensions(
+        defaultOptimizations.getStandaloneDimensions(), userDefinedStandaloneConfig);
+  }
 }

@@ -16,52 +16,72 @@
 
 package com.android.tools.build.bundletool.model;
 
+import static com.android.tools.build.bundletool.model.AndroidManifest.SDK_SANDBOX_MIN_VERSION;
 import static com.android.tools.build.bundletool.model.BundleModule.APEX_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.ASSETS_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.DEX_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.LIB_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.RESOURCES_DIRECTORY;
 import static com.android.tools.build.bundletool.model.BundleModule.ROOT_DIRECTORY;
+import static com.android.tools.build.bundletool.model.RuntimeEnabledSdkVersionEncoder.encodeSdkMajorAndMinorVersion;
+import static com.android.tools.build.bundletool.model.SourceStampConstants.STAMP_SOURCE_METADATA_KEY;
+import static com.android.tools.build.bundletool.model.SourceStampConstants.STAMP_TYPE_METADATA_KEY;
+import static com.android.tools.build.bundletool.model.targeting.TargetedDirectorySegment.COUNTRY_SET_KEY;
+import static com.android.tools.build.bundletool.model.targeting.TargetedDirectorySegment.DEVICE_GROUP_KEY;
+import static com.android.tools.build.bundletool.model.targeting.TargetedDirectorySegment.DEVICE_TIER_KEY;
 import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.SCREEN_DENSITY_TO_PROTO_VALUE_MAP;
-import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.lPlusVariantTargeting;
+import static com.android.tools.build.bundletool.model.utils.TargetingNormalizer.normalizeApkTargeting;
+import static com.android.tools.build.bundletool.model.utils.TargetingNormalizer.normalizeVariantTargeting;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.toOptional;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.android.aapt.Resources.ResourceTable;
+import com.android.bundle.Config.ApexEmbeddedApkConfig;
 import com.android.bundle.Files.ApexImages;
 import com.android.bundle.Files.Assets;
 import com.android.bundle.Files.NativeLibraries;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdk;
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.AbiTargeting;
 import com.android.bundle.Targeting.ApkTargeting;
-import com.android.bundle.Targeting.GraphicsApi;
-import com.android.bundle.Targeting.GraphicsApiTargeting;
+import com.android.bundle.Targeting.CountrySetTargeting;
 import com.android.bundle.Targeting.LanguageTargeting;
 import com.android.bundle.Targeting.MultiAbi;
 import com.android.bundle.Targeting.MultiAbiTargeting;
-import com.android.bundle.Targeting.OpenGlVersion;
+import com.android.bundle.Targeting.Sanitizer;
+import com.android.bundle.Targeting.Sanitizer.SanitizerAlias;
+import com.android.bundle.Targeting.SanitizerTargeting;
 import com.android.bundle.Targeting.TextureCompressionFormatTargeting;
 import com.android.bundle.Targeting.VariantTargeting;
-import com.android.bundle.Targeting.VulkanVersion;
 import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
+import com.android.tools.build.bundletool.model.SourceStampConstants.StampType;
 import com.android.tools.build.bundletool.model.utils.ResourcesUtils;
 import com.google.auto.value.AutoValue;
 import com.google.auto.value.extension.memoized.Memoized;
+import com.google.common.base.Ascii;
 import com.google.common.base.Joiner;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
+import com.google.common.io.ByteSource;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.google.errorprone.annotations.CheckReturnValue;
 import com.google.errorprone.annotations.Immutable;
+import java.net.MalformedURLException;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.util.List;
 import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.stream.Stream;
-import javax.annotation.CheckReturnValue;
 
 /** A module split is a subset of a bundle module. */
 @Immutable
@@ -78,12 +98,22 @@ public abstract class ModuleSplit {
     SPLIT,
     INSTANT,
     ASSET_SLICE,
+    ARCHIVE,
+    STANDALONE_FEATURE_MODULE
   }
 
-  /** Returns the targeting of the APK represented by this instance. */
+  /**
+   * Returns the targeting of the APK represented by this instance.
+   *
+   * <p>Order of repeated all repeated fields is guaranteed to be deterministic.
+   */
   public abstract ApkTargeting getApkTargeting();
 
-  /** Returns the targeting of the Variant this instance belongs to. */
+  /**
+   * Returns the targeting of the Variant this instance belongs to.
+   *
+   * <p>Order of repeated all repeated fields is guaranteed to be deterministic.
+   */
   public abstract VariantTargeting getVariantTargeting();
 
   /** Whether this ModuleSplit instance represents a standalone, split, instant or system apk. */
@@ -97,6 +127,8 @@ public abstract class ModuleSplit {
    *     inside the module, as opposed to the original bundle's ZipEntry names.
    */
   public abstract ImmutableList<ModuleEntry> getEntries();
+
+  public abstract boolean getSparseEncoding();
 
   public abstract Optional<ResourceTable> getResourceTable();
 
@@ -114,6 +146,8 @@ public abstract class ModuleSplit {
 
   /** The module APEX configuration - what system images it contains and with what targeting. */
   public abstract Optional<ApexImages> getApexConfig();
+
+  public abstract ImmutableList<ApexEmbeddedApkConfig> getApexEmbeddedApkConfigs();
 
   public abstract Builder toBuilder();
 
@@ -152,6 +186,15 @@ public abstract class ModuleSplit {
     }
     // Alternatives without values are not supported for MultiAbiTargeting.
 
+    SanitizerTargeting sanitizerTargeting = getApkTargeting().getSanitizerTargeting();
+    for (Sanitizer sanitizer : sanitizerTargeting.getValueList()) {
+      if (sanitizer.getAlias().equals(SanitizerAlias.HWADDRESS)) {
+        suffixJoiner.add("hwasan");
+      } else {
+        throw new IllegalArgumentException("Unknown sanitizer");
+      }
+    }
+
     LanguageTargeting languageTargeting = getApkTargeting().getLanguageTargeting();
     if (!languageTargeting.getValueList().isEmpty()) {
       languageTargeting.getValueList().forEach(suffixJoiner::add);
@@ -170,23 +213,33 @@ public abstract class ModuleSplit {
                         .get(value.getDensityAlias())
                         .replace('-', '_')));
 
-    GraphicsApiTargeting graphicsApiTargeting = getApkTargeting().getGraphicsApiTargeting();
-    if (!graphicsApiTargeting.getValueList().isEmpty()) {
-      graphicsApiTargeting
-          .getValueList()
-          .forEach(value -> suffixJoiner.add(formatGraphicsApi(value)));
-    } else if (!graphicsApiTargeting.getAlternativesList().isEmpty()) {
-      suffixJoiner.add("other_gfx");
-    }
-
     TextureCompressionFormatTargeting textureFormatTargeting =
         getApkTargeting().getTextureCompressionFormatTargeting();
     if (!textureFormatTargeting.getValueList().isEmpty()) {
       textureFormatTargeting
           .getValueList()
-          .forEach(value -> suffixJoiner.add(value.getAlias().name().toLowerCase()));
+          .forEach(value -> suffixJoiner.add(Ascii.toLowerCase(value.getAlias().name())));
     } else if (!textureFormatTargeting.getAlternativesList().isEmpty()) {
       suffixJoiner.add("other_tcf");
+    }
+
+    getApkTargeting()
+        .getDeviceTierTargeting()
+        .getValueList()
+        .forEach(value -> suffixJoiner.add(DEVICE_TIER_KEY + "_" + value.getValue()));
+
+    getApkTargeting()
+        .getDeviceGroupTargeting()
+        .getValueList()
+        .forEach(value -> suffixJoiner.add(DEVICE_GROUP_KEY + "_" + value));
+
+    CountrySetTargeting countrySetTargeting = getApkTargeting().getCountrySetTargeting();
+    if (!countrySetTargeting.getValueList().isEmpty()) {
+      countrySetTargeting
+          .getValueList()
+          .forEach(value -> suffixJoiner.add(COUNTRY_SET_KEY + "_" + value));
+    } else if (!countrySetTargeting.getAlternativesList().isEmpty()) {
+      suffixJoiner.add("other_countries");
     }
 
     return suffixJoiner.toString();
@@ -196,32 +249,11 @@ public abstract class ModuleSplit {
     return AbiName.fromProto(abi.getAlias()).getPlatformName().replace('-', '_');
   }
 
-  private static String formatGraphicsApi(GraphicsApi graphicsTargeting) {
-    StringJoiner result = new StringJoiner("_");
-    if (graphicsTargeting.hasMinOpenGlVersion()) {
-      result.add("gl" + formatGlVersion(graphicsTargeting.getMinOpenGlVersion()));
-    } else if (graphicsTargeting.hasMinVulkanVersion()) {
-      result.add("vk" + formatVulkanVersion(graphicsTargeting.getMinVulkanVersion()));
-    }
-    return result.toString();
-  }
-
-  private static String formatVulkanVersion(VulkanVersion vulkanVersion) {
-    // Will treat missing minor as 0 which is fine.
-    return vulkanVersion.getMajor() + "_" + vulkanVersion.getMinor();
-  }
-
-  private static String formatGlVersion(OpenGlVersion glVersion) {
-    // Will treat missing minor as 0 which is fine.
-    return glVersion.getMajor() + "_" + glVersion.getMinor();
-  }
-
   /** Filters out any entries not referenced in the given resource table. */
   public static ImmutableList<ModuleEntry> filterResourceEntries(
       ImmutableList<ModuleEntry> entries, ResourceTable resourceTable) {
     ImmutableSet<ZipPath> referencedPaths = ResourcesUtils.getAllFileReferences(resourceTable);
-    return entries
-        .stream()
+    return entries.stream()
         .filter(entry -> referencedPaths.contains(entry.getPath()))
         .collect(toImmutableList());
   }
@@ -237,6 +269,43 @@ public abstract class ModuleSplit {
     AndroidManifest apkManifest =
         getAndroidManifest().toEditor().removeUnknownSplitComponents(knownSplits).save();
     return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the source stamp in the split manifest. */
+  public ModuleSplit writeSourceStampInManifest(String stampSource, StampType stampType) {
+    if (!isEligibleForSourceStamp()) {
+      return this;
+    }
+
+    checkStampSource(stampSource);
+
+    AndroidManifest apkManifest =
+        getAndroidManifest()
+            .toEditor()
+            .addMetaDataString(STAMP_SOURCE_METADATA_KEY, stampSource)
+            .addMetaDataString(STAMP_TYPE_METADATA_KEY, stampType.toString())
+            .save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  private boolean isEligibleForSourceStamp() {
+    switch (getSplitType()) {
+      case SPLIT:
+      case INSTANT:
+        return isBaseModuleSplit() && isMasterSplit();
+      case STANDALONE:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private static void checkStampSource(String stampSource) {
+    try {
+      new URL(stampSource).toURI();
+    } catch (MalformedURLException | URISyntaxException e) {
+      throw new IllegalArgumentException("Invalid stamp source. Stamp sources should be URLs.", e);
+    }
   }
 
   /** Writes the final manifest that reflects the Split ID. */
@@ -257,6 +326,118 @@ public abstract class ModuleSplit {
               moduleManifest.getExtractNativeLibsValue());
     }
     return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Ensures that the {@code <application>} element is present in the manifest. */
+  @CheckReturnValue
+  public ModuleSplit addApplicationElementIfMissingInManifest() {
+    AndroidManifest modifiedManifest =
+        getAndroidManifest().toEditor().addApplicationElementIfMissing().save();
+    return toBuilder().setAndroidManifest(modifiedManifest).build();
+  }
+
+  /** Sets the hasCode attribute in the manifest to the given value. */
+  @CheckReturnValue
+  public ModuleSplit setHasCodeInManifest(boolean hasCode) {
+    AndroidManifest modifiedManifest = getAndroidManifest().toEditor().setHasCode(hasCode).save();
+    return toBuilder().setAndroidManifest(modifiedManifest).build();
+  }
+
+  /** Writes SDK version code to Android Manifest. */
+  public ModuleSplit writeSdkVersionCode(Integer versionCode) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setVersionCode(versionCode).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes SDK version name ("majorVersion.minorVersion.patchVersion") to Android Manifest. */
+  public ModuleSplit writeSdkVersionName(String versionName) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setVersionName(versionName).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the APK package name in the 'package' attribute in the AndroidManifest. */
+  public ModuleSplit writeManifestPackage(String packageName) {
+    AndroidManifest apkManifest = getAndroidManifest().toEditor().setPackage(packageName).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the SDK package name and Android version major to the <sdk-library> element. */
+  public ModuleSplit writeSdkLibraryElement(String packageName, int versionMajor) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setSdkLibraryElement(packageName, versionMajor).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /**
+   * Overrides minimum SDK version if it is lower than the SDK sandbox minimum version or if it is
+   * not set.
+   */
+  public ModuleSplit overrideMinSdkVersionForSdkSandbox() {
+    if (!getAndroidManifest().getMinSdkVersion().isPresent()
+        || getAndroidManifest().getMinSdkVersion().get() < SDK_SANDBOX_MIN_VERSION) {
+      AndroidManifest apkManifest =
+          getAndroidManifest().toEditor().setMinSdkVersion(SDK_SANDBOX_MIN_VERSION).save();
+      return toBuilder().setAndroidManifest(apkManifest).build();
+    }
+    return this;
+  }
+
+  /** Overrides value of android:minSdkVersion attribute in the manifest. */
+  public ModuleSplit overrideMinSdkVersion(int minSdkVersion) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setMinSdkVersion(minSdkVersion).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the SDK Patch version to a new <meta-data> element. */
+  public ModuleSplit writePatchVersion(int patchVersion) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setSdkPatchVersionMetadata(patchVersion).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /** Writes the SDK provider class name to a new <property> element. */
+  public ModuleSplit writeSdkProviderClassName(String sdkProviderClassName) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setSdkProviderClassName(sdkProviderClassName).save();
+    return toBuilder().setAndroidManifest(apkManifest).build();
+  }
+
+  /**
+   * Writes the compatibility SDK provider class name to a new <property> element in the manifest,
+   * as well as to a text file under assets/ directory.
+   */
+  public ModuleSplit writeCompatSdkProviderClassName(String sdkProviderClassName) {
+    AndroidManifest apkManifest =
+        getAndroidManifest().toEditor().setCompatSdkProviderClassName(sdkProviderClassName).save();
+    return toBuilder()
+        .setAndroidManifest(apkManifest)
+        // This is a workaround for a platform bug which does not let the compat library parse the
+        // class name from the manifest.
+        .addEntry(
+            ModuleEntry.builder()
+                .setPath(ZipPath.create("assets/SandboxedSdkProviderCompatClassName.txt"))
+                .setContent(ByteSource.wrap(sdkProviderClassName.getBytes(UTF_8)))
+                .build())
+        .build();
+  }
+
+  /**
+   * Adds uses-sdk-library elements that correspond to the given {@link RuntimeEnabledSdk}s to the
+   * manifest.
+   */
+  public ModuleSplit addUsesSdkLibraryElements(
+      ImmutableCollection<RuntimeEnabledSdk> runtimeEnabledSdks) {
+    ManifestEditor manifestEditor = getAndroidManifest().toEditor();
+    runtimeEnabledSdks.forEach(
+        sdk ->
+            manifestEditor.addUsesSdkLibraryElement(
+                sdk.getPackageName(),
+                encodeSdkMajorAndMinorVersion(sdk.getVersionMajor(), sdk.getVersionMinor()),
+                sdk.getCertificateDigest()));
+    return toBuilder().setAndroidManifest(manifestEditor.save()).build();
   }
 
   private String generateSplitId(String resolvedSuffix) {
@@ -283,43 +464,45 @@ public abstract class ModuleSplit {
   public static Builder builder() {
     return new AutoValue_ModuleSplit.Builder()
         .setEntries(ImmutableList.of())
-        .setSplitType(SplitType.SPLIT);
+        .setSplitType(SplitType.SPLIT)
+        .setSparseEncoding(false)
+        .setApexEmbeddedApkConfigs(ImmutableList.of());
   }
 
   /**
    * Creates a {@link ModuleSplit} with all entries from the {@link BundleModule} valid directories.
    *
-   * <p>The generated ModuleSplit has empty APK targeting and default L+ variant targeting.
+   * <p>The generated ModuleSplit has an empty APK targeting and an empty variant targeting.
    */
   public static ModuleSplit forModule(BundleModule bundleModule) {
-    return forModule(bundleModule, lPlusVariantTargeting());
+    return forModule(bundleModule, VariantTargeting.getDefaultInstance());
   }
 
   /**
    * Creates a {@link ModuleSplit} with all entries from the {@link BundleModule} valid directories
-   * with empty APK targeting and given variant targeting.
+   * with an empty APK targeting and the given variant targeting.
    */
   public static ModuleSplit forModule(
       BundleModule bundleModule, VariantTargeting variantTargeting) {
-    return fromFeatureBundleModule(
+    return fromBundleModule(
         bundleModule, Predicates.alwaysTrue(), /* setResourceTable= */ true, variantTargeting);
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the resources entries with empty APK targeting and
-   * default L+ variant targeting.
+   * Creates a {@link ModuleSplit} only with the resources entries with an empty APK targeting and
+   * an empty variant targeting.
    */
   public static ModuleSplit forResources(BundleModule bundleModule) {
-    return forResources(bundleModule, lPlusVariantTargeting());
+    return forResources(bundleModule, VariantTargeting.getDefaultInstance());
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the resources entries with empty APK targeting and
-   * given variant targeting.
+   * Creates a {@link ModuleSplit} only with the resources entries with an empty APK targeting and
+   * the given variant targeting.
    */
   public static ModuleSplit forResources(
       BundleModule bundleModule, VariantTargeting variantTargeting) {
-    return fromFeatureBundleModule(
+    return fromBundleModule(
         bundleModule,
         entry -> entry.getPath().startsWith(RESOURCES_DIRECTORY),
         /* setResourceTable= */ true,
@@ -327,20 +510,20 @@ public abstract class ModuleSplit {
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the assets entries with empty APK targeting and default
-   * L+ variant targeting.
+   * Creates a {@link ModuleSplit} only with the assets entries with an empty APK targeting and an
+   * empty variant targeting.
    */
   public static ModuleSplit forAssets(BundleModule bundleModule) {
-    return forAssets(bundleModule, lPlusVariantTargeting());
+    return forAssets(bundleModule, VariantTargeting.getDefaultInstance());
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the assets entries with empty APK targeting and given
-   * variant targeting.
+   * Creates a {@link ModuleSplit} only with the assets entries with an empty APK targeting and the
+   * given variant targeting.
    */
   public static ModuleSplit forAssets(
       BundleModule bundleModule, VariantTargeting variantTargeting) {
-    return fromFeatureBundleModule(
+    return fromBundleModule(
         bundleModule,
         entry -> entry.getPath().startsWith(ASSETS_DIRECTORY),
         /* setResourceTable= */ false,
@@ -348,20 +531,20 @@ public abstract class ModuleSplit {
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the native library entries with empty APK targeting and
-   * default L+ variant targeting.
+   * Creates a {@link ModuleSplit} only with the native library entries with an empty APK targeting
+   * and an empty variant targeting.
    */
   public static ModuleSplit forNativeLibraries(BundleModule bundleModule) {
-    return forNativeLibraries(bundleModule, lPlusVariantTargeting());
+    return forNativeLibraries(bundleModule, VariantTargeting.getDefaultInstance());
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the native library entries with empty APK targeting and
-   * given variant targeting.
+   * Creates a {@link ModuleSplit} only with the native library entries with an empty APK targeting
+   * and the given variant targeting.
    */
   public static ModuleSplit forNativeLibraries(
       BundleModule bundleModule, VariantTargeting variantTargeting) {
-    return fromFeatureBundleModule(
+    return fromBundleModule(
         bundleModule,
         entry -> entry.getPath().startsWith(LIB_DIRECTORY),
         /* setResourceTable= */ false,
@@ -369,19 +552,19 @@ public abstract class ModuleSplit {
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the dex files with empty APK targeting and default L+
+   * Creates a {@link ModuleSplit} only with the dex files with an empty APK targeting and an empty
    * variant targeting.
    */
   public static ModuleSplit forDex(BundleModule bundleModule) {
-    return forDex(bundleModule, lPlusVariantTargeting());
+    return forDex(bundleModule, VariantTargeting.getDefaultInstance());
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the dex files with empty APK targeting and given
+   * Creates a {@link ModuleSplit} only with the dex files with an empty APK targeting and the given
    * variant targeting.
    */
   public static ModuleSplit forDex(BundleModule bundleModule, VariantTargeting variantTargeting) {
-    return fromFeatureBundleModule(
+    return fromBundleModule(
         bundleModule,
         entry -> entry.getPath().startsWith(DEX_DIRECTORY),
         /* setResourceTable= */ false,
@@ -389,11 +572,11 @@ public abstract class ModuleSplit {
   }
 
   public static ModuleSplit forRoot(BundleModule bundleModule) {
-    return forRoot(bundleModule, lPlusVariantTargeting());
+    return forRoot(bundleModule, VariantTargeting.getDefaultInstance());
   }
 
   public static ModuleSplit forRoot(BundleModule bundleModule, VariantTargeting variantTargeting) {
-    return fromFeatureBundleModule(
+    return fromBundleModule(
         bundleModule,
         entry -> entry.getPath().startsWith(ROOT_DIRECTORY),
         /* setResourceTable= */ false,
@@ -401,32 +584,57 @@ public abstract class ModuleSplit {
   }
 
   /**
-   * Creates a {@link ModuleSplit} only with the apex image entries with empty APK targeting and
-   * default L+ variant targeting.
+   * Creates a {@link ModuleSplit} only with the apex image entries with an empty APK targeting and
+   * an empty variant targeting.
    */
   public static ModuleSplit forApex(BundleModule bundleModule) {
-    return fromFeatureBundleModule(
+    return forApex(bundleModule, VariantTargeting.getDefaultInstance());
+  }
+
+  public static ModuleSplit forApex(BundleModule bundleModule, VariantTargeting variantTargeting) {
+    return fromBundleModule(
         bundleModule,
         entry -> entry.getPath().startsWith(APEX_DIRECTORY),
         /* setResourceTable= */ false,
-        lPlusVariantTargeting());
+        variantTargeting);
+  }
+
+  public static ModuleSplit forArchive(
+      BundleModule bundleModule,
+      AndroidManifest archivedManifest,
+      ResourceTable archivedResourceTable,
+      ImmutableMap<ZipPath, ByteSource> additionalResourcesByByteSource) {
+    ModuleSplit.Builder archivedSplit =
+        ModuleSplit.builder()
+            .setModuleName(bundleModule.getName())
+            .setSplitType(SplitType.ARCHIVE)
+            .setMasterSplit(true)
+            .setAndroidManifest(archivedManifest)
+            .setApkTargeting(ApkTargeting.getDefaultInstance())
+            .setVariantTargeting(VariantTargeting.getDefaultInstance());
+    archivedSplit.setResourceTable(archivedResourceTable);
+    archivedSplit.setEntries(
+        filterResourceEntries(bundleModule.getEntries().asList(), archivedResourceTable));
+
+    additionalResourcesByByteSource.forEach(
+        (destinationPath, fileContent) ->
+            archivedSplit.addEntry(
+                ModuleEntry.builder().setPath(destinationPath).setContent(fileContent).build()));
+
+    return archivedSplit.build();
   }
 
   /**
    * Creates a {@link ModuleSplit} with entries from the Bundle Module satisfying the predicate with
-   * a given variant targeting.
+   * the given variant targeting.
    *
    * <p>The created instance is not standalone thus its variant targets L+ devices initially.
    */
-  private static ModuleSplit fromFeatureBundleModule(
+  private static ModuleSplit fromBundleModule(
       BundleModule bundleModule,
       Predicate<ModuleEntry> entriesPredicate,
       boolean setResourceTable,
       VariantTargeting variantTargeting) {
-    checkArgument(
-        bundleModule.getModuleType().equals(ModuleType.FEATURE_MODULE),
-        "Expected a Feature Module, got %s",
-        bundleModule.getModuleType());
     ModuleSplit.Builder splitBuilder =
         builder()
             .setModuleName(bundleModule.getName())
@@ -437,7 +645,7 @@ public abstract class ModuleSplit {
             .setAndroidManifest(bundleModule.getAndroidManifest())
             // Initially each split is master split.
             .setMasterSplit(true)
-            .setSplitType(SplitType.SPLIT)
+            .setSplitType(getSplitTypeFromModuleType(bundleModule.getModuleType()))
             .setApkTargeting(ApkTargeting.getDefaultInstance())
             .setVariantTargeting(variantTargeting);
 
@@ -447,27 +655,26 @@ public abstract class ModuleSplit {
     if (setResourceTable) {
       bundleModule.getResourceTable().ifPresent(splitBuilder::setResourceTable);
     }
+    if (bundleModule.getBundleApexConfig().isPresent()) {
+      splitBuilder.setApexEmbeddedApkConfigs(
+          ImmutableList.copyOf(
+              bundleModule.getBundleApexConfig().get().getApexEmbeddedApkConfigList()));
+    }
     return splitBuilder.build();
   }
 
-  public static ModuleSplit fromAssetBundleModule(BundleModule bundleModule) {
-    checkArgument(
-        bundleModule.getModuleType().equals(ModuleType.ASSET_MODULE),
-        "Expected an asset pack, got %s",
-        bundleModule.getModuleType());
-    ModuleSplit.Builder splitBuilder =
-        ModuleSplit.builder()
-            .setModuleName(bundleModule.getName())
-            .setEntries(bundleModule.getEntries().asList())
-            .setAndroidManifest(bundleModule.getAndroidManifest())
-            .setMasterSplit(true)
-            .setSplitType(SplitType.ASSET_SLICE)
-            .setApkTargeting(ApkTargeting.getDefaultInstance())
-            .setVariantTargeting(VariantTargeting.getDefaultInstance());
-
-    bundleModule.getAssetsConfig().ifPresent(splitBuilder::setAssetsConfig);
-
-    return splitBuilder.build();
+  private static SplitType getSplitTypeFromModuleType(ModuleType moduleType) {
+    switch (moduleType) {
+      case FEATURE_MODULE:
+      case ML_MODULE:
+      case SDK_DEPENDENCY_MODULE:
+        return SplitType.SPLIT;
+      case ASSET_MODULE:
+        return SplitType.ASSET_SLICE;
+      case UNKNOWN_MODULE_TYPE:
+        throw new IllegalStateException();
+    }
+    throw new IllegalStateException();
   }
 
   @Memoized
@@ -489,6 +696,16 @@ public abstract class ModuleSplit {
    */
   public Stream<ModuleEntry> findEntriesUnderPath(String path) {
     ZipPath zipPath = ZipPath.create(path);
+    return findEntriesUnderPath(zipPath);
+  }
+
+  /**
+   * Returns all {@link ModuleEntry} that have a relative module path under a given path.
+   *
+   * <p>Note: Consider using {@link #getEntriesByDirectory()} for performance, unless a recursive
+   * search is truly needed.
+   */
+  public Stream<ModuleEntry> findEntriesUnderPath(ZipPath zipPath) {
     return getEntriesByDirectory().asMap().entrySet().stream()
         .filter(dirAndEntries -> dirAndEntries.getKey().startsWith(zipPath))
         .flatMap(dirAndEntries -> dirAndEntries.getValue().stream());
@@ -518,6 +735,8 @@ public abstract class ModuleSplit {
 
     public abstract Builder setMasterSplit(boolean isMasterSplit);
 
+    public abstract Builder setSparseEncoding(boolean sparseEncoding);
+
     public abstract Builder setNativeConfig(NativeLibraries nativeConfig);
 
     public abstract Builder setAssetsConfig(Assets assetsConfig);
@@ -527,7 +746,14 @@ public abstract class ModuleSplit {
      */
     public abstract Builder setApexConfig(ApexImages apexConfig);
 
+    public abstract Builder setApexEmbeddedApkConfigs(
+        ImmutableList<ApexEmbeddedApkConfig> apexEmbeddedApkConfigs);
+
+    protected abstract ApkTargeting getApkTargeting();
+
     public abstract Builder setApkTargeting(ApkTargeting targeting);
+
+    protected abstract VariantTargeting getVariantTargeting();
 
     public abstract Builder setVariantTargeting(VariantTargeting targeting);
 
@@ -535,12 +761,21 @@ public abstract class ModuleSplit {
 
     public abstract Builder setEntries(List<ModuleEntry> entries);
 
+    abstract ImmutableList.Builder<ModuleEntry> entriesBuilder();
+
+    @CanIgnoreReturnValue
+    public Builder addEntry(ModuleEntry moduleEntry) {
+      entriesBuilder().add(moduleEntry);
+      return this;
+    }
+
     public abstract Builder setResourceTable(ResourceTable resourceTable);
 
     public abstract Builder setAndroidManifest(AndroidManifest androidManifest);
 
     abstract ImmutableList.Builder<ManifestMutator> masterManifestMutatorsBuilder();
 
+    @CanIgnoreReturnValue
     public Builder addMasterManifestMutator(ManifestMutator manifestMutator) {
       masterManifestMutatorsBuilder().add(manifestMutator);
       return this;
@@ -549,18 +784,26 @@ public abstract class ModuleSplit {
     protected abstract ModuleSplit autoBuild();
 
     public ModuleSplit build() {
-      ModuleSplit moduleSplit = autoBuild();
+      ModuleSplit moduleSplit =
+          this.setApkTargeting(normalizeApkTargeting(getApkTargeting()))
+              .setVariantTargeting(normalizeVariantTargeting(getVariantTargeting()))
+              .autoBuild();
       // For system splits the master split is formed by fusing Screen Density, Abi, Language
       // splits, hence it might have Abi, Screen Density, Language targeting set.
       if (moduleSplit.isMasterSplit() && !moduleSplit.getSplitType().equals(SplitType.SYSTEM)) {
         checkState(
-            moduleSplit
-                .getApkTargeting()
-                .toBuilder()
+            moduleSplit.getApkTargeting().toBuilder()
                 .clearSdkVersionTargeting()
+                // TCF and Device Tier can be set on standalone/universal APKs: if suffix stripping
+                // was enabled, a default targeting suffix was used.
+                .clearTextureCompressionFormatTargeting()
+                .clearDeviceTierTargeting()
+                .clearDeviceGroupTargeting()
+                .clearCountrySetTargeting()
                 .build()
                 .equals(ApkTargeting.getDefaultInstance()),
-            "Master split cannot have any targeting other than SDK version.");
+            "Master split cannot have any targeting other than SDK version, Texture"
+                + " Compression Format, Device Tier, Device Group and Country Set.");
       }
       return moduleSplit;
     }

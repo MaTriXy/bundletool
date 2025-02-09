@@ -21,8 +21,11 @@ import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.DENS
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.android.bundle.Devices.DeviceSpec;
+import com.android.bundle.Devices.SdkRuntime;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
 import com.android.tools.build.bundletool.model.utils.Versions;
+import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.util.JsonFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,9 +34,28 @@ import java.util.Arrays;
 /** Factory to create {@link DeviceSpec} instances. */
 public final class DeviceFactory {
 
-  public static DeviceSpec deviceWithSdk(int sdkVersion) {
+  public static DeviceSpec deviceWithSdkAndCodename(int sdkVersion, String codename) {
     return mergeSpecs(
-        sdkVersion(sdkVersion), abis("arm64-v8a"), density(DensityAlias.MDPI), locales("en-US"));
+        sdkVersion(sdkVersion, codename),
+        abis("arm64-v8a"),
+        density(DensityAlias.MDPI),
+        locales("en-US"));
+  }
+
+  public static DeviceSpec deviceWithSdk(int sdkVersion) {
+    return deviceWithSdkAndCodename(sdkVersion, "REL");
+  }
+
+  public static DeviceSpec qDeviceWithLocales(String... locales) {
+    return mergeSpecs(
+        sdkVersion(Versions.ANDROID_Q_API_VERSION),
+        abis("arm64-v8a"),
+        density(DensityAlias.MDPI),
+        locales(locales));
+  }
+
+  public static DeviceSpec lDevice() {
+    return deviceWithSdk(Versions.ANDROID_L_API_VERSION);
   }
 
   public static DeviceSpec lDeviceWithLocales(String... locales) {
@@ -68,6 +90,24 @@ public final class DeviceFactory {
         locales("en-US"));
   }
 
+  public static DeviceSpec lDeviceWithGlExtensions(String... glExtensions) {
+    return mergeSpecs(
+        sdkVersion(Versions.ANDROID_L_API_VERSION),
+        abis("arm64-v8a"),
+        density(DensityAlias.MDPI),
+        locales("en-US"),
+        glExtensions(glExtensions));
+  }
+
+  public static DeviceSpec preLDeviceWithGlExtensions(String... glExtensions) {
+    return mergeSpecs(
+        sdkVersion(15),
+        abis("arm64-v8a"),
+        density(DensityAlias.MDPI),
+        locales("en-US"),
+        glExtensions(glExtensions));
+  }
+
   public static DeviceSpec locales(String... locales) {
     return DeviceSpec.newBuilder().addAllSupportedLocales(Arrays.asList(locales)).build();
   }
@@ -88,8 +128,46 @@ public final class DeviceFactory {
     return DeviceSpec.newBuilder().setSdkVersion(sdkVersion).build();
   }
 
+  public static DeviceSpec sdkVersion(int sdkVersion, String codename) {
+    return DeviceSpec.newBuilder().setSdkVersion(sdkVersion).setCodename(codename).build();
+  }
+
   public static DeviceSpec deviceFeatures(String... features) {
     return DeviceSpec.newBuilder().addAllDeviceFeatures(Arrays.asList(features)).build();
+  }
+
+  public static DeviceSpec glExtensions(String... glExtensions) {
+    return DeviceSpec.newBuilder().addAllGlExtensions(Arrays.asList(glExtensions)).build();
+  }
+
+  public static DeviceSpec deviceTier(int deviceTier) {
+    return DeviceSpec.newBuilder().setDeviceTier(Int32Value.of(deviceTier)).build();
+  }
+
+  public static DeviceSpec countrySet(String countrySet) {
+    return DeviceSpec.newBuilder().setCountrySet(StringValue.of(countrySet)).build();
+  }
+
+  public static DeviceSpec deviceGroups(String... deviceGroups) {
+    return DeviceSpec.newBuilder().addAllDeviceGroups(Arrays.asList(deviceGroups)).build();
+  }
+
+  public static DeviceSpec sdkRuntimeSupported(boolean supported) {
+    return DeviceSpec.newBuilder()
+        .setSdkRuntime(SdkRuntime.newBuilder().setSupported(supported))
+        .build();
+  }
+
+  public static DeviceSpec branding(String brand, String device) {
+    return DeviceSpec.newBuilder().setBuildBrand(brand).setBuildDevice(device).build();
+  }
+
+  public static DeviceSpec soc(String manufacturer, String model) {
+    return DeviceSpec.newBuilder().setSocManufacturer(manufacturer).setSocModel(model).build();
+  }
+
+  public static DeviceSpec ramBytes(long ramBytes) {
+    return DeviceSpec.newBuilder().setRamBytes(ramBytes).build();
   }
 
   public static DeviceSpec mergeSpecs(DeviceSpec deviceSpec, DeviceSpec... specParts) {

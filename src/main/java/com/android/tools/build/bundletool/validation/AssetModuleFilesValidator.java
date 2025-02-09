@@ -22,7 +22,7 @@ import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
 import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.FormatMethod;
 import com.google.errorprone.annotations.FormatString;
@@ -44,6 +44,7 @@ public class AssetModuleFilesValidator extends SubValidator {
     validateNoResourceTable(module);
     validateOnlyAssetsAndManifest(module);
     validateNoNativeOrApexConfig(module);
+    validateNoRuntimeEnabledSdkConfig(module);
   }
 
   private void validateNoResourceTable(BundleModule module) {
@@ -79,10 +80,17 @@ public class AssetModuleFilesValidator extends SubValidator {
         module.getName());
   }
 
+  private void validateNoRuntimeEnabledSdkConfig(BundleModule module) {
+    validate(
+        !module.getRuntimeEnabledSdkConfig().isPresent(),
+        "Runtime-enabled SDK config not allowed in asset packs, but found in '%s'.",
+        module.getName());
+  }
+
   @FormatMethod
   private void validate(boolean condition, @FormatString String message, Object... args) {
     if (!condition) {
-      throw ValidationException.builder().withMessage(message, args).build();
+      throw InvalidBundleException.builder().withUserMessage(message, args).build();
     }
   }
 }

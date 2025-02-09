@@ -173,7 +173,8 @@ public class FlagTest {
   public void passwordFlag_noPrefix_throws() {
     Flag<Password> flag = Flag.password("testFlag");
     ParsedFlags parsedFlags = new FlagParser().parse("--testFlag=hello");
-    Throwable exception = assertThrows(FlagParseException.class, () -> flag.getValue(parsedFlags));
+    Throwable exception =
+        assertThrows(IllegalArgumentException.class, () -> flag.getValue(parsedFlags));
     assertThat(exception)
         .hasMessageThat()
         .contains("Passwords must be prefixed with \"pass:\" or \"file:\"");
@@ -239,7 +240,7 @@ public class FlagTest {
   }
 
   @Test
-  public void positiveIntegerFlag_NaN_throws() throws Exception {
+  public void positiveIntegerFlag_notANumber_throws() throws Exception {
     Flag<Integer> flag = Flag.positiveInteger("testFlag");
     ParsedFlags parsedFlags = new FlagParser().parse("--testFlag=blah");
     FlagParseException exception =
@@ -259,6 +260,38 @@ public class FlagTest {
   @Test
   public void positiveIntegerFlag_negative_throws() throws Exception {
     Flag<Integer> flag = Flag.positiveInteger("testFlag");
+    ParsedFlags parsedFlags = new FlagParser().parse("--testFlag=-1");
+    FlagParseException exception =
+        assertThrows(FlagParseException.class, () -> flag.getValue(parsedFlags));
+    assertThat(exception).hasMessageThat().contains("has illegal value");
+  }
+
+  @Test
+  public void nonNegativeIntegerFlag_valid() throws Exception {
+    Flag<Integer> flag = Flag.nonNegativeInteger("testFlag");
+    ParsedFlags parsedFlags = new FlagParser().parse("--testFlag=42");
+    assertThat(flag.getRequiredValue(parsedFlags)).isEqualTo(42);
+  }
+
+  @Test
+  public void nonNegativeIntegerFlag_notANumber_throws() throws Exception {
+    Flag<Integer> flag = Flag.nonNegativeInteger("testFlag");
+    ParsedFlags parsedFlags = new FlagParser().parse("--testFlag=blah");
+    FlagParseException exception =
+        assertThrows(FlagParseException.class, () -> flag.getValue(parsedFlags));
+    assertThat(exception).hasMessageThat().contains("Error while parsing");
+  }
+
+  @Test
+  public void nonNegativeIntegerFlag_zero_valid() throws Exception {
+    Flag<Integer> flag = Flag.nonNegativeInteger("testFlag");
+    ParsedFlags parsedFlags = new FlagParser().parse("--testFlag=0");
+    assertThat(flag.getRequiredValue(parsedFlags)).isEqualTo(0);
+  }
+
+  @Test
+  public void nonNegativeIntegerFlag_negative_throws() throws Exception {
+    Flag<Integer> flag = Flag.nonNegativeInteger("testFlag");
     ParsedFlags parsedFlags = new FlagParser().parse("--testFlag=-1");
     FlagParseException exception =
         assertThrows(FlagParseException.class, () -> flag.getValue(parsedFlags));

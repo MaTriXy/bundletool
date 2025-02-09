@@ -16,11 +16,13 @@
 
 package com.android.tools.build.bundletool.commands;
 
+import static com.android.tools.build.bundletool.model.targeting.TargetingUtils.generateApexImagesTargeting;
+import static com.android.tools.build.bundletool.model.targeting.TargetingUtils.generateAssetsTargeting;
+import static com.android.tools.build.bundletool.model.targeting.TargetingUtils.generateNativeLibrariesTargeting;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileDoesNotExist;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndReadable;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileHasExtension;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Config.Bundletool;
@@ -35,12 +37,11 @@ import com.android.tools.build.bundletool.io.AppBundleSerializer;
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleMetadata;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
-import com.android.tools.build.bundletool.model.targeting.TargetingGenerator;
+import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
 import com.android.tools.build.bundletool.model.utils.files.BufferedIo;
+import com.android.tools.build.bundletool.model.utils.files.FileUtils;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.android.tools.build.bundletool.validation.BundleModulesValidator;
 import com.google.auto.value.AutoValue;
@@ -55,6 +56,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
+import java.util.logging.Logger;
 import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 
@@ -62,9 +64,12 @@ import java.util.zip.ZipFile;
 @AutoValue
 public abstract class BuildBundleCommand {
 
+  private static final Logger logger = Logger.getLogger(BuildBundleCommand.class.getName());
+
   public static final String COMMAND_NAME = "build-bundle";
 
   private static final Flag<Path> OUTPUT_FLAG = Flag.path("output");
+  private static final Flag<Boolean> OVERWRITE_OUTPUT_FLAG = Flag.booleanFlag("overwrite");
   private static final Flag<Path> BUNDLE_CONFIG_FLAG = Flag.path("config");
   private static final Flag<ImmutableList<Path>> MODULES_FLAG = Flag.pathList("modules");
   private static final Flag<ImmutableMap<ZipPath, Path>> METADATA_FILES_FLAG =
@@ -72,6 +77,8 @@ public abstract class BuildBundleCommand {
   private static final Flag<Boolean> UNCOMPRESSED_FLAG = Flag.booleanFlag("uncompressed");
 
   public abstract Path getOutputPath();
+
+  public abstract boolean getOverwriteOutput();
 
   public abstract ImmutableList<Path> getModulesPaths();
 
@@ -84,14 +91,19 @@ public abstract class BuildBundleCommand {
   abstract boolean getUncompressedBundle();
 
   public static Builder builder() {
-    // By default, everything is compressed.
-    return new AutoValue_BuildBundleCommand.Builder().setUncompressedBundle(false);
+    // By default, everything is compressed, and we don't overwrite existing files.
+    return new AutoValue_BuildBundleCommand.Builder()
+        .setUncompressedBundle(false)
+        .setOverwriteOutput(false);
   }
 
   /** Builder for the {@link BuildBundleCommand}. */
   @AutoValue.Builder
   public abstract static class Builder {
     public abstract Builder setOutputPath(Path outputPath);
+
+    /** Sets whether to write over the previous file if it already exists. */
+    public abstract Builder setOverwriteOutput(boolean overwriteOutput);
 
     public abstract Builder setModulesPaths(ImmutableList<Path> modulesPaths);
 
@@ -133,11 +145,12 @@ public abstract class BuildBundleCommand {
 
     void addMetadataFileInternal(ZipPath metadataPath, Path file) {
       if (!Files.exists(file)) {
-        throw ValidationException.builder()
-            .withMessage("Metadata file '%s' does not exist.", file)
+        throw InvalidCommandException.builder()
+            .withInternalMessage("Metadata file '%s' does not exist.", file)
             .build();
       }
-      bundleMetadataBuilder().addFile(metadataPath, BufferedIo.inputStreamSupplier(file));
+      bundleMetadataBuilder()
+          .addFile(metadataPath, com.google.common.io.Files.asByteSource(file.toFile()));
     }
 
     /**
@@ -170,6 +183,7 @@ public abstract class BuildBundleCommand {
             .setModulesPaths(MODULES_FLAG.getRequiredValue(flags));
 
     // Optional flags.
+    OVERWRITE_OUTPUT_FLAG.getValue(flags).ifPresent(builder::setOverwriteOutput);
     BUNDLE_CONFIG_FLAG
         .getValue(flags)
         .ifPresent(path -> builder.setBundleConfig(parseBundleConfigJson(path)));
@@ -194,18 +208,27 @@ public abstract class BuildBundleCommand {
         } catch (ZipException e) {
           throw CommandExecutionException.builder()
               .withCause(e)
-              .withMessage("File '%s' does not seem to be a valid ZIP file.", modulePath)
+              .withInternalMessage("File '%s' does not seem to be a valid ZIP file.", modulePath)
               .build();
         } catch (IOException e) {
           throw CommandExecutionException.builder()
               .withCause(e)
-              .withMessage("Unable to read file '%s'.", modulePath)
+              .withInternalMessage("Unable to read file '%s'.", modulePath)
               .build();
         }
       }
       ImmutableList<ZipFile> moduleZipFiles = moduleZipFilesBuilder.build();
 
-      ImmutableList<BundleModule> modules = new BundleModulesValidator().validate(moduleZipFiles);
+      // Read the Bundle Config file if provided by the developer.
+      BundleConfig bundleConfig =
+          getBundleConfig().orElse(BundleConfig.getDefaultInstance()).toBuilder()
+              .setBundletool(
+                  Bundletool.newBuilder()
+                      .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+              .build();
+
+      ImmutableList<BundleModule> modules =
+          new BundleModulesValidator().validate(moduleZipFiles, bundleConfig);
       checkState(
           moduleZipFiles.size() == modules.size(),
           "Incorrect number of modules parsed (%s != %s).",
@@ -229,19 +252,19 @@ public abstract class BuildBundleCommand {
         modulesWithTargeting.add(moduleWithTargeting.build());
       }
 
-      // Read the Bundle Config file if provided by the developer.
-      BundleConfig bundleConfig =
-          getBundleConfig()
-              .orElse(BundleConfig.getDefaultInstance())
-              .toBuilder()
-              .setBundletool(
-                  Bundletool.newBuilder()
-                      .setVersion(BundleToolVersion.getCurrentVersion().toString()))
-              .build();
-
       AppBundle appBundle =
           AppBundle.buildFromModules(
               modulesWithTargeting.build(), bundleConfig, getBundleMetadata());
+
+      Path outputDirectory = getOutputPath().toAbsolutePath().getParent();
+      if (Files.notExists(outputDirectory)) {
+        logger.info("Output directory '" + outputDirectory + "' does not exist, creating it.");
+        FileUtils.createDirectories(outputDirectory);
+      }
+
+      if (getOverwriteOutput()) {
+        Files.deleteIfExists(getOutputPath());
+      }
 
       new AppBundleSerializer(getUncompressedBundle()).writeToDisk(appBundle, getOutputPath());
     } catch (IOException e) {
@@ -256,60 +279,9 @@ public abstract class BuildBundleCommand {
               checkFileHasExtension("File", path, ".zip");
               checkFileExistsAndReadable(path);
             });
-    checkFileDoesNotExist(getOutputPath());
-  }
-
-  private static Optional<Assets> generateAssetsTargeting(BundleModule module) {
-    ImmutableList<ZipPath> assetDirectories =
-        module
-            .findEntriesUnderPath(BundleModule.ASSETS_DIRECTORY)
-            .map(ModuleEntry::getPath)
-            .filter(path -> path.getNameCount() > 1)
-            .map(ZipPath::getParent)
-            .distinct()
-            .collect(toImmutableList());
-
-    if (assetDirectories.isEmpty()) {
-      return Optional.empty();
+    if (!getOverwriteOutput()) {
+      checkFileDoesNotExist(getOutputPath());
     }
-
-    return Optional.of(new TargetingGenerator().generateTargetingForAssets(assetDirectories));
-  }
-
-  private static Optional<NativeLibraries> generateNativeLibrariesTargeting(BundleModule module) {
-    // Validation ensures that files under "lib/" conform to pattern "lib/<abi-dir>/file.so".
-    // We extract the distinct "lib/<abi-dir>" directories.
-    ImmutableList<String> libAbiDirs =
-        module
-            .findEntriesUnderPath(BundleModule.LIB_DIRECTORY)
-            .map(ModuleEntry::getPath)
-            .filter(path -> path.getNameCount() > 2)
-            .map(path -> path.subpath(0, 2))
-            .map(ZipPath::toString)
-            .distinct()
-            .collect(toImmutableList());
-
-    if (libAbiDirs.isEmpty()) {
-      return Optional.empty();
-    }
-
-    return Optional.of(new TargetingGenerator().generateTargetingForNativeLibraries(libAbiDirs));
-  }
-
-  private static Optional<ApexImages> generateApexImagesTargeting(BundleModule module) {
-    // Validation ensures that files under "apex/" conform to the pattern
-    // "apex/<abi1>.<abi2>...<abiN>.img".
-    ImmutableList<ZipPath> apexImageFiles =
-        module
-            .findEntriesUnderPath(BundleModule.APEX_DIRECTORY)
-            .map(ModuleEntry::getPath)
-            .collect(toImmutableList());
-
-    if (apexImageFiles.isEmpty()) {
-      return Optional.empty();
-    }
-
-    return Optional.of(new TargetingGenerator().generateTargetingForApexImages(apexImageFiles));
   }
 
   private static BundleConfig parseBundleConfigJson(Path bundleConfigJsonPath) {
@@ -317,14 +289,15 @@ public abstract class BuildBundleCommand {
     try (Reader bundleConfigReader = BufferedIo.reader(bundleConfigJsonPath)) {
       JsonFormat.parser().merge(bundleConfigReader, bundleConfig);
     } catch (InvalidProtocolBufferException e) {
-      throw CommandExecutionException.builder()
+      throw InvalidCommandException.builder()
           .withCause(e)
-          .withMessage("The file '%s' is not a valid BundleConfig JSON file.", bundleConfigJsonPath)
+          .withInternalMessage(
+              "The file '%s' is not a valid BundleConfig JSON file.", bundleConfigJsonPath)
           .build();
     } catch (IOException e) {
-      throw CommandExecutionException.builder()
+      throw InvalidCommandException.builder()
           .withCause(e)
-          .withMessage(
+          .withInternalMessage(
               "An error occurred while trying to read the file '%s'.", bundleConfigJsonPath)
           .build();
     }
@@ -348,6 +321,12 @@ public abstract class BuildBundleCommand {
                 .setFlagName(OUTPUT_FLAG.getName())
                 .setExampleValue("bundle.aab")
                 .setDescription("Path to the where the Android App Bundle should be built.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(OVERWRITE_OUTPUT_FLAG.getName())
+                .setOptional(true)
+                .setDescription("If set, any previous existing output will be overwritten.")
                 .build())
         .addFlag(
             FlagDescription.builder()

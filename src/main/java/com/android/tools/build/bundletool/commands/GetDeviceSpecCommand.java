@@ -16,6 +16,7 @@
 
 package com.android.tools.build.bundletool.commands;
 
+import static com.android.tools.build.bundletool.commands.CommandUtils.ANDROID_SERIAL_VARIABLE;
 import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.ANDROID_HOME_VARIABLE;
 import static com.android.tools.build.bundletool.model.utils.SdkToolsLocator.SYSTEM_PATH_VARIABLE;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -27,14 +28,15 @@ import com.android.tools.build.bundletool.device.AdbServer;
 import com.android.tools.build.bundletool.device.DeviceAnalyzer;
 import com.android.tools.build.bundletool.flags.Flag;
 import com.android.tools.build.bundletool.flags.ParsedFlags;
-import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
 import com.android.tools.build.bundletool.model.utils.DefaultSystemEnvironmentProvider;
-import com.android.tools.build.bundletool.model.utils.SdkToolsLocator;
 import com.android.tools.build.bundletool.model.utils.SystemEnvironmentProvider;
 import com.android.tools.build.bundletool.model.utils.files.FilePreconditions;
 import com.google.auto.value.AutoValue;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.io.MoreFiles;
+import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.util.JsonFormat;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -55,8 +57,10 @@ public abstract class GetDeviceSpecCommand {
   private static final Flag<String> DEVICE_ID_FLAG = Flag.string("device-id");
   private static final Flag<Path> OUTPUT_FLAG = Flag.path("output");
   private static final Flag<Boolean> OVERWRITE_OUTPUT_FLAG = Flag.booleanFlag("overwrite");
-
-  private static final String ANDROID_SERIAL_VARIABLE = "ANDROID_SERIAL";
+  private static final Flag<Integer> DEVICE_TIER_FLAG = Flag.nonNegativeInteger("device-tier");
+  private static final Flag<ImmutableSet<String>> DEVICE_GROUPS_FLAG =
+      Flag.stringSet("device-groups");
+  private static final Flag<String> COUNTRY_SET_FLAG = Flag.string("country-set");
 
   private static final SystemEnvironmentProvider DEFAULT_PROVIDER =
       new DefaultSystemEnvironmentProvider();
@@ -72,6 +76,12 @@ public abstract class GetDeviceSpecCommand {
   public abstract boolean getOverwriteOutput();
 
   abstract AdbServer getAdbServer();
+
+  public abstract Optional<Integer> getDeviceTier();
+
+  public abstract Optional<ImmutableSet<String>> getDeviceGroups();
+
+  public abstract Optional<String> getCountrySet();
 
   public static Builder builder() {
     return new AutoValue_GetDeviceSpecCommand.Builder().setOverwriteOutput(false);
@@ -97,14 +107,20 @@ public abstract class GetDeviceSpecCommand {
     /** The caller is responsible for the lifecycle of the {@link AdbServer}. */
     public abstract Builder setAdbServer(AdbServer adbServer);
 
+    public abstract Builder setDeviceTier(Integer deviceTier);
+
+    public abstract Builder setDeviceGroups(ImmutableSet<String> deviceGroups);
+
+    public abstract Builder setCountrySet(String countrySet);
+
     abstract GetDeviceSpecCommand autoBuild();
 
     public GetDeviceSpecCommand build() {
       GetDeviceSpecCommand command = autoBuild();
 
       if (!JSON_EXTENSION.equals(MoreFiles.getFileExtension(command.getOutputPath()))) {
-        throw ValidationException.builder()
-            .withMessage(
+        throw InvalidCommandException.builder()
+            .withInternalMessage(
                 "Flag --output should be the path where to generate the device spec file. "
                     + "Its extension must be '.json'.")
             .build();
@@ -123,28 +139,18 @@ public abstract class GetDeviceSpecCommand {
     GetDeviceSpecCommand.Builder builder =
         builder().setAdbServer(adbServer).setOutputPath(OUTPUT_FLAG.getRequiredValue(flags));
 
-    Optional<String> deviceSerialName = DEVICE_ID_FLAG.getValue(flags);
-    if (!deviceSerialName.isPresent()) {
-      deviceSerialName = systemEnvironmentProvider.getVariable(ANDROID_SERIAL_VARIABLE);
-    }
+    Optional<String> deviceSerialName =
+        CommandUtils.getDeviceSerialName(flags, DEVICE_ID_FLAG, systemEnvironmentProvider);
     deviceSerialName.ifPresent(builder::setDeviceId);
 
-    Path adbPath =
-        ADB_PATH_FLAG
-            .getValue(flags)
-            .orElseGet(
-                () ->
-                    new SdkToolsLocator()
-                        .locateAdb(systemEnvironmentProvider)
-                        .orElseThrow(
-                            () ->
-                                new CommandExecutionException(
-                                    "Unable to determine the location of ADB. Please set the --adb "
-                                        + "flag or define ANDROID_HOME or PATH environment "
-                                        + "variable.")));
+    Path adbPath = CommandUtils.getAdbPath(flags, ADB_PATH_FLAG, systemEnvironmentProvider);
     builder.setAdbPath(adbPath);
 
     OVERWRITE_OUTPUT_FLAG.getValue(flags).ifPresent(builder::setOverwriteOutput);
+
+    DEVICE_TIER_FLAG.getValue(flags).ifPresent(builder::setDeviceTier);
+    DEVICE_GROUPS_FLAG.getValue(flags).ifPresent(builder::setDeviceGroups);
+    COUNTRY_SET_FLAG.getValue(flags).ifPresent(builder::setCountrySet);
     flags.checkNoUnknownFlags();
 
     return builder.build();
@@ -161,6 +167,17 @@ public abstract class GetDeviceSpecCommand {
     AdbServer adb = getAdbServer();
     adb.init(getAdbPath());
     DeviceSpec deviceSpec = new DeviceAnalyzer(adb).getDeviceSpec(getDeviceId());
+    if (getDeviceTier().isPresent()) {
+      deviceSpec =
+          deviceSpec.toBuilder().setDeviceTier(Int32Value.of(getDeviceTier().get())).build();
+    }
+    if (getDeviceGroups().isPresent()) {
+      deviceSpec = deviceSpec.toBuilder().addAllDeviceGroups(getDeviceGroups().get()).build();
+    }
+    if (getCountrySet().isPresent()) {
+      deviceSpec =
+          deviceSpec.toBuilder().setCountrySet(StringValue.of(getCountrySet().get())).build();
+    }
     writeDeviceSpecToFile(deviceSpec, getOutputPath());
     return deviceSpec;
   }
@@ -226,6 +243,39 @@ public abstract class GetDeviceSpecCommand {
                 .setFlagName(OVERWRITE_OUTPUT_FLAG.getName())
                 .setOptional(true)
                 .setDescription("If set, any previous existing output will be overwritten.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(DEVICE_TIER_FLAG.getName())
+                .setExampleValue("low")
+                .setOptional(true)
+                .setDescription(
+                    "Device tier of the given device. This value will be used to match the correct"
+                        + " device tier targeted APKs to this device."
+                        + " This flag is only relevant if the bundle uses device tier targeting,"
+                        + " and should be set in that case.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(DEVICE_GROUPS_FLAG.getName())
+                .setExampleValue("highRam,googlePixel")
+                .setOptional(true)
+                .setDescription(
+                    "Device groups the given device belongs to. This value will be used to match"
+                        + " the correct device group conditional modules to this device."
+                        + " This flag is only relevant if the bundle uses device group targeting"
+                        + " in conditional modules and should be set in that case.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(COUNTRY_SET_FLAG.getName())
+                .setExampleValue("country_set_name")
+                .setOptional(true)
+                .setDescription(
+                    "Country set for the user account on the device. This value will be"
+                        + " used to match the correct country set targeted APKs to this device."
+                        + " This flag is only relevant if the bundle uses country set targeting,"
+                        + " and should be set in that case.")
                 .build())
         .build();
   }

@@ -28,18 +28,19 @@ import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.with
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withUsesSplit;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apexImages;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.assetsDirectoryTargeting;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.graphicsApiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceGroupTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeAssetsTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.multiAbiTargeting;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.openGlVersionFrom;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedApexImage;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedApexImageWithBuildInfo;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.textureCompressionTargeting;
 import static com.android.tools.build.bundletool.testing.TestUtils.expectMissingRequiredBuilderPropertyException;
 import static com.android.tools.build.bundletool.testing.TestUtils.expectMissingRequiredFlagException;
 import static com.android.tools.build.bundletool.testing.truth.zip.TruthZip.assertThat;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
-import static com.google.common.truth.Truth8.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -63,8 +64,8 @@ import com.android.tools.build.bundletool.flags.FlagParser;
 import com.android.tools.build.bundletool.io.ZipBuilder;
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.android.tools.build.bundletool.testing.BundleConfigBuilder;
 import com.android.tools.build.bundletool.testing.ManifestProtoUtils.ManifestMutator;
@@ -130,7 +131,7 @@ public class BuildBundleCommandTest {
     Path bundleConfigJsonPath = tmpDir.resolve("BundleConfig.pb.json");
     Files.write(
         bundleConfigJsonPath,
-        ("{ \"compression\": { \"uncompressedGlob\": [\"foo\"] } }").getBytes(UTF_8));
+        "{ \"compression\": { \"uncompressedGlob\": [\"foo\"] } }".getBytes(UTF_8));
 
     BuildBundleCommand commandViaBuilder =
         BuildBundleCommand.builder()
@@ -209,10 +210,11 @@ public class BuildBundleCommandTest {
                     "--metadata-file=com.some.namespace/metadata-A.txt:" + metadataFileAPath,
                     "--metadata-file=com.some.namespace/metadata-B.txt:" + metadataFileBPath));
 
-    // Cannot compare the command objects directly, because the InputStreamSupplier instances in
+    // Cannot compare the command objects directly, because the ByteSource instances in
     // BundleMetadata would not compare equal.
-    assertThat(commandViaBuilder.getBundleMetadata().getFileDataMap().keySet())
-        .containsExactlyElementsIn(commandViaFlags.getBundleMetadata().getFileDataMap().keySet());
+    assertThat(commandViaBuilder.getBundleMetadata().getFileContentMap().keySet())
+        .containsExactlyElementsIn(
+            commandViaFlags.getBundleMetadata().getFileContentMap().keySet());
   }
 
   @Test
@@ -229,6 +231,24 @@ public class BuildBundleCommandTest {
         BuildBundleCommand.fromFlags(
             new FlagParser()
                 .parse("--output=" + bundlePath, "--modules=" + baseModulePath, "--uncompressed"));
+
+    assertThat(commandViaBuilder).isEqualTo(commandViaFlags);
+  }
+
+  @Test
+  public void buildingViaFlagsAndBuilderHasSameResult_optionalOverwrite() throws Exception {
+    Path baseModulePath = buildSimpleModule("base");
+    BuildBundleCommand commandViaBuilder =
+        BuildBundleCommand.builder()
+            .setOutputPath(bundlePath)
+            .setModulesPaths(ImmutableList.of(baseModulePath))
+            .setOverwriteOutput(true)
+            .build();
+
+    BuildBundleCommand commandViaFlags =
+        BuildBundleCommand.fromFlags(
+            new FlagParser()
+                .parse("--output=" + bundlePath, "--modules=" + baseModulePath, "--overwrite"));
 
     assertThat(commandViaBuilder).isEqualTo(commandViaFlags);
   }
@@ -268,6 +288,67 @@ public class BuildBundleCommandTest {
       assertThat(bundle).hasFile("base/res/drawable/icon.png").withContent("image".getBytes(UTF_8));
       assertThat(bundle).hasFile("base/root/anything2.dat").withContent("any2".getBytes(UTF_8));
       assertThat(bundle).hasFile("base/resources.pb").withContent(resourceTable.toByteArray());
+    }
+  }
+
+  @Test
+  public void module_riscV64Arch() throws Exception {
+    XmlNode manifest = androidManifest(PKG_NAME, withHasCode(true));
+    ResourceTable resourceTable =
+        new ResourceTableBuilder()
+            .addPackage(PKG_NAME)
+            .addDrawableResource("icon", "res/drawable/icon.png")
+            .build();
+    Path module =
+        new ZipBuilder()
+            .addFileWithContent(ZipPath.create("dex/classes.dex"), "dex".getBytes(UTF_8))
+            .addFileWithContent(ZipPath.create("lib/armeabi-v7a/libX.so"), "arm32".getBytes(UTF_8))
+            .addFileWithContent(ZipPath.create("lib/arm64-v8a/libX.so"), "arm64".getBytes(UTF_8))
+            .addFileWithContent(ZipPath.create("lib/riscv64/libX.so"), "riscv64".getBytes(UTF_8))
+            .addFileWithProtoContent(ZipPath.create("manifest/AndroidManifest.xml"), manifest)
+            .addFileWithContent(ZipPath.create("res/drawable/icon.png"), "image".getBytes(UTF_8))
+            .addFileWithProtoContent(ZipPath.create("resources.pb"), resourceTable)
+            .writeTo(tmpDir.resolve("base.zip"));
+    NativeLibraries nativeLibraries =
+        NativeLibraries.newBuilder()
+            .addDirectory(
+                TargetedNativeDirectory.newBuilder()
+                    .setPath("lib/armeabi-v7a")
+                    .setTargeting(
+                        NativeDirectoryTargeting.newBuilder()
+                            .setAbi(Abi.newBuilder().setAlias(ARMEABI_V7A))))
+            .addDirectory(
+                TargetedNativeDirectory.newBuilder()
+                    .setPath("lib/arm64-v8a")
+                    .setTargeting(
+                        NativeDirectoryTargeting.newBuilder()
+                            .setAbi(Abi.newBuilder().setAlias(ARM64_V8A))))
+            .addDirectory(
+                TargetedNativeDirectory.newBuilder()
+                    .setPath("lib/riscv64")
+                    .setTargeting(
+                        NativeDirectoryTargeting.newBuilder()
+                            .setAbi(Abi.newBuilder().setAlias(AbiAlias.RISCV64))))
+            .build();
+    BuildBundleCommand.builder()
+        .setOutputPath(bundlePath)
+        .setModulesPaths(ImmutableList.of(module))
+        .build()
+        .execute();
+
+    try (ZipFile bundle = new ZipFile(bundlePath.toFile())) {
+      assertThat(bundle).hasFile("base/dex/classes.dex").withContent("dex".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/lib/armeabi-v7a/libX.so")
+          .withContent("arm32".getBytes(UTF_8));
+      assertThat(bundle).hasFile("base/lib/arm64-v8a/libX.so").withContent("arm64".getBytes(UTF_8));
+      assertThat(bundle).hasFile("base/lib/riscv64/libX.so").withContent("riscv64".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/manifest/AndroidManifest.xml")
+          .withContent(manifest.toByteArray());
+      assertThat(bundle).hasFile("base/res/drawable/icon.png").withContent("image".getBytes(UTF_8));
+      assertThat(bundle).hasFile("base/resources.pb").withContent(resourceTable.toByteArray());
+      assertThat(bundle).hasFile("base/native.pb").withContent(nativeLibraries.toByteArray());
     }
   }
 
@@ -317,7 +398,81 @@ public class BuildBundleCommandTest {
   }
 
   @Test
-  public void assetsTargeting_generated() throws Exception {
+  public void validApexModuleWithBuildInfo() throws Exception {
+    XmlNode manifest = androidManifest(PKG_NAME, withHasCode(false));
+    ImmutableSet<AbiAlias> targetedAbis = ImmutableSet.of(X86_64, X86, ARM64_V8A, ARMEABI_V7A);
+    ApexImages apexConfig =
+        apexImages(
+            targetedImageWithBuildInfoAndAlternatives(
+                "apex/x86_64.img", "apex/x86_64.build_info.pb", X86_64, targetedAbis),
+            targetedImageWithBuildInfoAndAlternatives(
+                "apex/x86.img", "apex/x86.build_info.pb", X86, targetedAbis),
+            targetedImageWithBuildInfoAndAlternatives(
+                "apex/arm64-v8a.img", "apex/arm64-v8a.build_info.pb", ARM64_V8A, targetedAbis),
+            targetedImageWithBuildInfoAndAlternatives(
+                "apex/armeabi-v7a.img",
+                "apex/armeabi-v7a.build_info.pb",
+                ARMEABI_V7A,
+                targetedAbis));
+    byte[] apexManifest = "{\"name\": \"com.test.app\"}".getBytes(UTF_8);
+    Path module =
+        new ZipBuilder()
+            .addFileWithContent(ZipPath.create("apex/x86_64.img"), "x86_64".getBytes(UTF_8))
+            .addFileWithContent(
+                ZipPath.create("apex/x86_64.build_info.pb"), "x86_64.build_info".getBytes(UTF_8))
+            .addFileWithContent(ZipPath.create("apex/x86.img"), "x86".getBytes(UTF_8))
+            .addFileWithContent(
+                ZipPath.create("apex/x86.build_info.pb"), "x86.build_info".getBytes(UTF_8))
+            .addFileWithContent(ZipPath.create("apex/arm64-v8a.img"), "arm64-v8a".getBytes(UTF_8))
+            .addFileWithContent(
+                ZipPath.create("apex/arm64-v8a.build_info.pb"),
+                "arm64-v8a.build_info".getBytes(UTF_8))
+            .addFileWithContent(
+                ZipPath.create("apex/armeabi-v7a.img"), "armeabi-v7a".getBytes(UTF_8))
+            .addFileWithContent(
+                ZipPath.create("apex/armeabi-v7a.build_info.pb"),
+                "armeabi-v7a.build_info".getBytes(UTF_8))
+            .addFileWithProtoContent(ZipPath.create("manifest/AndroidManifest.xml"), manifest)
+            .addFileWithContent(ZipPath.create("root/apex_manifest.json"), apexManifest)
+            .writeTo(tmpDir.resolve("base.zip"));
+
+    BuildBundleCommand.builder()
+        .setOutputPath(bundlePath)
+        .setModulesPaths(ImmutableList.of(module))
+        .build()
+        .execute();
+
+    try (ZipFile bundle = new ZipFile(bundlePath.toFile())) {
+      assertThat(bundle)
+          .hasFile("base/manifest/AndroidManifest.xml")
+          .withContent(manifest.toByteArray());
+      assertThat(bundle).hasFile("base/apex/x86_64.img").withContent("x86_64".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/apex/x86_64.build_info.pb")
+          .withContent("x86_64.build_info".getBytes(UTF_8));
+      assertThat(bundle).hasFile("base/apex/x86.img").withContent("x86".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/apex/x86.build_info.pb")
+          .withContent("x86.build_info".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/apex/arm64-v8a.img")
+          .withContent("arm64-v8a".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/apex/arm64-v8a.build_info.pb")
+          .withContent("arm64-v8a.build_info".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/apex/armeabi-v7a.img")
+          .withContent("armeabi-v7a".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/apex/armeabi-v7a.build_info.pb")
+          .withContent("armeabi-v7a.build_info".getBytes(UTF_8));
+      assertThat(bundle).hasFile("base/root/apex_manifest.json").withContent(apexManifest);
+      assertThat(bundle).hasFile("base/apex.pb").withContent(apexConfig.toByteArray());
+    }
+  }
+
+  @Test
+  public void assetsTargeting_generated_deviceTier() throws Exception {
     XmlNode manifest = androidManifest(PKG_NAME, withHasCode(true));
     Assets assetsConfig =
         Assets.newBuilder()
@@ -327,18 +482,18 @@ public class BuildBundleCommandTest {
                     .setTargeting(AssetsDirectoryTargeting.getDefaultInstance()))
             .addDirectory(
                 TargetedAssetsDirectory.newBuilder()
-                    .setPath("assets/gfx#opengl_3.0/texture#tcf_atc")
+                    .setPath("assets/texture#tcf_atc/device#tier_0")
                     .setTargeting(
                         mergeAssetsTargeting(
-                            assetsDirectoryTargeting(graphicsApiTargeting(openGlVersionFrom(3))),
                             assetsDirectoryTargeting(
-                                textureCompressionTargeting(TextureCompressionFormatAlias.ATC)))))
+                                textureCompressionTargeting(TextureCompressionFormatAlias.ATC)),
+                            assetsDirectoryTargeting(deviceTierTargeting(0)))))
             .build();
     Path module =
         new ZipBuilder()
             .addFileWithContent(ZipPath.create("assets/anything.dat"), "any".getBytes(UTF_8))
             .addFileWithContent(
-                ZipPath.create("assets/gfx#opengl_3.0/texture#tcf_atc/file.dat"),
+                ZipPath.create("assets/texture#tcf_atc/device#tier_0/file.dat"),
                 "any2".getBytes(UTF_8))
             .addFileWithContent(ZipPath.create("dex/classes.dex"), "dex".getBytes(UTF_8))
             .addFileWithProtoContent(ZipPath.create("manifest/AndroidManifest.xml"), manifest)
@@ -353,7 +508,54 @@ public class BuildBundleCommandTest {
     try (ZipFile bundle = new ZipFile(bundlePath.toFile())) {
       assertThat(bundle).hasFile("base/assets/anything.dat").withContent("any".getBytes(UTF_8));
       assertThat(bundle)
-          .hasFile("base/assets/gfx#opengl_3.0/texture#tcf_atc/file.dat")
+          .hasFile("base/assets/texture#tcf_atc/device#tier_0/file.dat")
+          .withContent("any2".getBytes(UTF_8));
+      assertThat(bundle).hasFile("base/dex/classes.dex").withContent("dex".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/manifest/AndroidManifest.xml")
+          .withContent(manifest.toByteArray());
+      assertThat(bundle).hasFile("base/assets.pb").withContent(assetsConfig.toByteArray());
+    }
+  }
+
+  @Test
+  public void assetsTargeting_generated_deviceGroup() throws Exception {
+    XmlNode manifest = androidManifest(PKG_NAME, withHasCode(true));
+    Assets assetsConfig =
+        Assets.newBuilder()
+            .addDirectory(
+                TargetedAssetsDirectory.newBuilder()
+                    .setPath("assets")
+                    .setTargeting(AssetsDirectoryTargeting.getDefaultInstance()))
+            .addDirectory(
+                TargetedAssetsDirectory.newBuilder()
+                    .setPath("assets/texture#tcf_atc/device#group_a")
+                    .setTargeting(
+                        mergeAssetsTargeting(
+                            assetsDirectoryTargeting(
+                                textureCompressionTargeting(TextureCompressionFormatAlias.ATC)),
+                            assetsDirectoryTargeting(deviceGroupTargeting("a")))))
+            .build();
+    Path module =
+        new ZipBuilder()
+            .addFileWithContent(ZipPath.create("assets/anything.dat"), "any".getBytes(UTF_8))
+            .addFileWithContent(
+                ZipPath.create("assets/texture#tcf_atc/device#group_a/file.dat"),
+                "any2".getBytes(UTF_8))
+            .addFileWithContent(ZipPath.create("dex/classes.dex"), "dex".getBytes(UTF_8))
+            .addFileWithProtoContent(ZipPath.create("manifest/AndroidManifest.xml"), manifest)
+            .writeTo(tmpDir.resolve("base.zip"));
+
+    BuildBundleCommand.builder()
+        .setOutputPath(bundlePath)
+        .setModulesPaths(ImmutableList.of(module))
+        .build()
+        .execute();
+
+    try (ZipFile bundle = new ZipFile(bundlePath.toFile())) {
+      assertThat(bundle).hasFile("base/assets/anything.dat").withContent("any".getBytes(UTF_8));
+      assertThat(bundle)
+          .hasFile("base/assets/texture#tcf_atc/device#group_a/file.dat")
           .withContent("any2".getBytes(UTF_8));
       assertThat(bundle).hasFile("base/dex/classes.dex").withContent("dex".getBytes(UTF_8));
       assertThat(bundle)
@@ -479,11 +681,11 @@ public class BuildBundleCommandTest {
     Path bundleConfigJsonPath = tmp.newFile("BundleConfig.pb.json").toPath();
     Files.write(
         bundleConfigJsonPath,
-        ("{ \"compression\": { \"uncompressedGlob\": \"foo\" } }").getBytes(UTF_8));
+        "{ \"compression\": { \"uncompressedGlob\": \"foo\" } }".getBytes(UTF_8));
 
     Exception e =
         assertThrows(
-            CommandExecutionException.class,
+            InvalidCommandException.class,
             () ->
                 BuildBundleCommand.fromFlags(
                     new FlagParser()
@@ -673,9 +875,9 @@ public class BuildBundleCommandTest {
     Path moduleFeature1 = buildSimpleModule("feature");
     Path moduleFeature2 = buildSimpleModule("feature", /* fileName= */ "feature2");
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 BuildBundleCommand.builder()
                     .setOutputPath(bundlePath)
@@ -693,9 +895,9 @@ public class BuildBundleCommandTest {
     Path baseModulePath = buildSimpleModule("base");
     Path nonExistentFilePath = tmpDir.resolve("metadata.txt");
 
-    ValidationException exceptionViaApi =
+    InvalidCommandException exceptionViaApi =
         assertThrows(
-            ValidationException.class,
+            InvalidCommandException.class,
             () ->
                 BuildBundleCommand.builder()
                     .setOutputPath(bundlePath)
@@ -705,9 +907,9 @@ public class BuildBundleCommandTest {
                     .execute());
     assertThat(exceptionViaApi).hasMessageThat().matches("Metadata file .* does not exist.");
 
-    ValidationException exceptionViaFlags =
+    InvalidCommandException exceptionViaFlags =
         assertThrows(
-            ValidationException.class,
+            InvalidCommandException.class,
             () ->
                 BuildBundleCommand.fromFlags(
                     new FlagParser()
@@ -805,8 +1007,7 @@ public class BuildBundleCommandTest {
             .setModulesPaths(ImmutableList.of(module))
             .build();
 
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> command.execute());
+    InvalidBundleException exception = assertThrows(InvalidBundleException.class, command::execute);
 
     assertThat(exception)
         .hasMessageThat()
@@ -860,8 +1061,7 @@ public class BuildBundleCommandTest {
                 ImmutableList.of(baseModulePath, module1Path, module2Path, module3Path))
             .build();
 
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> command.execute());
+    InvalidBundleException exception = assertThrows(InvalidBundleException.class, command::execute);
 
     assertThat(exception).hasMessageThat().contains("Found cyclic dependency between modules");
   }
@@ -888,8 +1088,7 @@ public class BuildBundleCommandTest {
             .setModulesPaths(ImmutableList.of(module))
             .build();
 
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> command.execute());
+    InvalidBundleException exception = assertThrows(InvalidBundleException.class, command::execute);
 
     assertThat(exception).hasMessageThat().contains("contains references to non-existing files");
   }
@@ -952,6 +1151,55 @@ public class BuildBundleCommandTest {
     }
   }
 
+  @Test
+  public void overwriteFlagNotSetRejectsCommandIfOutputAlreadyExists() throws Exception {
+    // Create the output.
+    Files.createFile(bundlePath);
+
+    Path module = createSimpleBaseModule();
+    Exception expected =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                BuildBundleCommand.builder()
+                    .setModulesPaths(ImmutableList.of(module))
+                    .setOutputPath(bundlePath)
+                    .build()
+                    .execute());
+    assertThat(expected).hasMessageThat().matches("File .* already exists.");
+  }
+
+  @Test
+  public void overwriteFlagSetOverritesOutput() throws Exception {
+    // Create an empty file output.
+    Files.createFile(bundlePath);
+    checkState(Files.size(bundlePath) == 0);
+
+    Path module = createSimpleBaseModule();
+    BuildBundleCommand.builder()
+        .setModulesPaths(ImmutableList.of(module))
+        .setOverwriteOutput(true)
+        .setOutputPath(bundlePath)
+        .build()
+        .execute();
+    assertThat(Files.size(bundlePath)).isGreaterThan(0L);
+  }
+
+  @Test
+  public void allParentDirectoriesCreated() throws IOException {
+    Path outputPath = tmpDir.resolve("non-existing-dir").resolve("bundle.aab");
+
+    Path module = createSimpleBaseModule();
+    BuildBundleCommand.builder()
+        .setModulesPaths(ImmutableList.of(module))
+        .setOverwriteOutput(true)
+        .setOutputPath(outputPath)
+        .build()
+        .execute();
+
+    assertThat(Files.exists(outputPath)).isTrue();
+  }
+
   private Path createSimpleBaseModule() throws IOException {
     return new ZipBuilder()
         .addFileWithProtoContent(
@@ -977,10 +1225,19 @@ public class BuildBundleCommandTest {
         .writeTo(tmpDir.resolve(fileName + ".zip"));
   }
 
-  private TargetedApexImage targetedImageWithAlternatives(
+  private static TargetedApexImage targetedImageWithAlternatives(
       String path, AbiAlias abi, ImmutableSet<AbiAlias> targetedAbis) {
     return targetedApexImage(
         path,
+        multiAbiTargeting(
+            abi, Sets.difference(targetedAbis, ImmutableSet.of(abi)).immutableCopy()));
+  }
+
+  private static TargetedApexImage targetedImageWithBuildInfoAndAlternatives(
+      String path, String buildInfoPath, AbiAlias abi, ImmutableSet<AbiAlias> targetedAbis) {
+    return targetedApexImageWithBuildInfo(
+        path,
+        buildInfoPath,
         multiAbiTargeting(
             abi, Sets.difference(targetedAbis, ImmutableSet.of(abi)).immutableCopy()));
   }

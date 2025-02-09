@@ -22,17 +22,21 @@ import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersi
 import static com.android.tools.build.bundletool.testing.TargetingUtils.variantMultiAbiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.variantSdkTargeting;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.android.bundle.Commands.ApexApkMetadata;
 import com.android.bundle.Commands.ApkDescription;
 import com.android.bundle.Commands.ApkSet;
+import com.android.bundle.Commands.ArchivedApkMetadata;
+import com.android.bundle.Commands.AssetModuleMetadata;
+import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.BuildSdkApksResult;
 import com.android.bundle.Commands.DeliveryType;
 import com.android.bundle.Commands.ModuleMetadata;
 import com.android.bundle.Commands.SplitApkMetadata;
 import com.android.bundle.Commands.StandaloneApkMetadata;
 import com.android.bundle.Commands.SystemApkMetadata;
-import com.android.bundle.Commands.SystemApkMetadata.SystemApkType;
 import com.android.bundle.Commands.Variant;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.ModuleTargeting;
@@ -43,6 +47,7 @@ import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableList;
+import com.google.protobuf.util.JsonFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -51,36 +56,94 @@ import java.util.stream.Stream;
 /** Helpers related to creating APKs archives in tests. */
 public final class ApksArchiveHelpers {
 
-  private static final byte[] DUMMY_BYTES = new byte[100];
+  private static final byte[] TEST_BYTES = new byte[100];
 
+  /** The format of the table of content when serialized to disk. */
+  public enum TocFormat {
+    PROTO,
+    JSON
+  }
+
+  /** Create an app APK set and serialize it to the provided path. */
   public static Path createApksArchiveFile(BuildApksResult result, Path location) throws Exception {
+    return createApksArchiveFile(result, location, TocFormat.PROTO);
+  }
+
+  /**
+   * Create an app APK set and serialize it to the provided path. The toc file will be serialized in
+   * the given tocFormat
+   */
+  public static Path createApksArchiveFile(
+      BuildApksResult result, Path location, TocFormat tocFormat) throws Exception {
     ZipBuilder archiveBuilder = new ZipBuilder();
 
     apkDescriptionStream(result)
         .forEach(
             apkDesc ->
-                archiveBuilder.addFileWithContent(ZipPath.create(apkDesc.getPath()), DUMMY_BYTES));
+                archiveBuilder.addFileWithContent(ZipPath.create(apkDesc.getPath()), TEST_BYTES));
+    switch (tocFormat) {
+      case PROTO:
+        archiveBuilder.addFileWithProtoContent(ZipPath.create("toc.pb"), result);
+        break;
+      case JSON:
+        archiveBuilder.addFileWithContent(
+            ZipPath.create("toc.json"), JsonFormat.printer().print(result).getBytes(UTF_8));
+        break;
+    }
+
+    return archiveBuilder.writeTo(location);
+  }
+
+  /** Create an SDK APK set and serialize it to the provided path. */
+  public static Path createSdkApksArchiveFile(BuildSdkApksResult result, Path location)
+      throws Exception {
+    ZipBuilder archiveBuilder = new ZipBuilder();
+
+    result.getVariantList().stream()
+        .flatMap(variant -> variant.getApkSetList().stream())
+        .flatMap(apkSet -> apkSet.getApkDescriptionList().stream())
+        .forEach(
+            apkDesc ->
+                archiveBuilder.addFileWithContent(ZipPath.create(apkDesc.getPath()), TEST_BYTES));
     archiveBuilder.addFileWithProtoContent(ZipPath.create("toc.pb"), result);
 
     return archiveBuilder.writeTo(location);
   }
 
   public static Path createApksDirectory(BuildApksResult result, Path location) throws Exception {
+    return createApksDirectory(result, location, TocFormat.PROTO);
+  }
+
+  public static Path createApksDirectory(BuildApksResult result, Path location, TocFormat tocFormat)
+      throws Exception {
     ImmutableList<ApkDescription> apkDescriptions =
         apkDescriptionStream(result).collect(toImmutableList());
 
     for (ApkDescription apkDescription : apkDescriptions) {
       Path apkPath = location.resolve(apkDescription.getPath());
       Files.createDirectories(apkPath.getParent());
-      Files.write(apkPath, DUMMY_BYTES);
+      Files.write(apkPath, TEST_BYTES);
     }
-    Files.write(location.resolve("toc.pb"), result.toByteArray());
+    switch (tocFormat) {
+      case PROTO:
+        Files.write(location.resolve("toc.pb"), result.toByteArray());
+        break;
+      case JSON:
+        Files.writeString(location.resolve("toc.json"), JsonFormat.printer().print(result));
+        break;
+    }
 
     return location;
   }
 
   public static Variant createVariant(VariantTargeting variantTargeting, ApkSet... apkSets) {
+    return createVariant(/* variantNumber= */ 0, variantTargeting, apkSets);
+  }
+
+  public static Variant createVariant(
+      int variantNumber, VariantTargeting variantTargeting, ApkSet... apkSets) {
     return Variant.newBuilder()
+        .setVariantNumber(variantNumber)
         .setTargeting(variantTargeting)
         .addAllApkSet(Arrays.asList(apkSets))
         .build();
@@ -186,7 +249,7 @@ public final class ApksArchiveHelpers {
   }
 
   public static ApkDescription createApkDescription(
-      ApkTargeting apkTargeting, Path apkPath, boolean isMasterSplit) {
+      ApkTargeting apkTargeting, ZipPath apkPath, boolean isMasterSplit) {
     return ApkDescription.newBuilder()
         .setPath(apkPath.toString())
         .setTargeting(apkTargeting)
@@ -216,7 +279,7 @@ public final class ApksArchiveHelpers {
 
   /** Creates an instant apk set with the given module name, ApkTargeting, and path for the apk. */
   public static ApkSet createInstantApkSet(
-      String moduleName, ApkTargeting apkTargeting, Path apkPath) {
+      String moduleName, ApkTargeting apkTargeting, ZipPath apkPath) {
     return ApkSet.newBuilder()
         .setModuleMetadata(
             ModuleMetadata.newBuilder()
@@ -231,7 +294,7 @@ public final class ApksArchiveHelpers {
         .build();
   }
 
-  public static ApkSet createStandaloneApkSet(ApkTargeting apkTargeting, Path apkPath) {
+  public static ApkSet createStandaloneApkSet(ApkTargeting apkTargeting, ZipPath apkPath) {
     // Note: Standalone APK is represented as a module named "base".
     return ApkSet.newBuilder()
         .setModuleMetadata(
@@ -245,7 +308,7 @@ public final class ApksArchiveHelpers {
         .build();
   }
 
-  public static ApkSet createSystemApkSet(ApkTargeting apkTargeting, Path apkPath) {
+  public static ApkSet createSystemApkSet(ApkTargeting apkTargeting, ZipPath apkPath) {
     // Note: System APK is represented as a module named "base".
     return ApkSet.newBuilder()
         .setModuleMetadata(
@@ -254,14 +317,33 @@ public final class ApksArchiveHelpers {
             ApkDescription.newBuilder()
                 .setPath(apkPath.toString())
                 .setTargeting(apkTargeting)
-                .setSystemApkMetadata(
-                    SystemApkMetadata.newBuilder()
-                        .addFusedModuleName("base")
-                        .setSystemApkType(SystemApkType.SYSTEM)))
+                .setSystemApkMetadata(SystemApkMetadata.newBuilder().addFusedModuleName("base")))
         .build();
   }
 
-  private static Stream<ApkDescription> apkDescriptionStream(BuildApksResult buildApksResult) {
+  public static ApkSet createArchivedApkSet(ApkTargeting apkTargeting, ZipPath apkPath) {
+    // Note: Archived APK is represented as a module named "base".
+    return ApkSet.newBuilder()
+        .setModuleMetadata(
+            ModuleMetadata.newBuilder().setName("base").setDeliveryType(DeliveryType.INSTALL_TIME))
+        .addApkDescription(
+            ApkDescription.newBuilder()
+                .setPath(apkPath.toString())
+                .setTargeting(apkTargeting)
+                .setArchivedApkMetadata(ArchivedApkMetadata.getDefaultInstance()))
+        .build();
+  }
+
+  public static AssetSliceSet createAssetSliceSet(
+      String moduleName, DeliveryType deliveryType, ApkDescription... apkDescriptions) {
+    return AssetSliceSet.newBuilder()
+        .setAssetModuleMetadata(
+            AssetModuleMetadata.newBuilder().setName(moduleName).setDeliveryType(deliveryType))
+        .addAllApkDescription(Arrays.asList(apkDescriptions))
+        .build();
+  }
+
+  public static Stream<ApkDescription> apkDescriptionStream(BuildApksResult buildApksResult) {
     return Stream.concat(
         buildApksResult.getVariantList().stream()
             .flatMap(variant -> variant.getApkSetList().stream())
@@ -269,4 +351,6 @@ public final class ApksArchiveHelpers {
         buildApksResult.getAssetSliceSetList().stream()
             .flatMap(assetSliceSet -> assetSliceSet.getApkDescriptionList().stream()));
   }
+
+  private ApksArchiveHelpers() {}
 }

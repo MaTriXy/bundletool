@@ -64,11 +64,12 @@ import com.android.tools.build.bundletool.commands.GetSizeCommand.GetSizeSubcomm
 import com.android.tools.build.bundletool.model.ConfigurationSizes;
 import com.android.tools.build.bundletool.model.SizeConfiguration;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
+import com.android.tools.build.bundletool.model.exceptions.IncompatibleDeviceException;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import java.nio.file.Paths;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -78,7 +79,7 @@ public class VariantTotalSizeAggregatorTest {
 
   private final GetSizeCommand.Builder getSizeCommand =
       GetSizeCommand.builder()
-          .setApksArchivePath(ZipPath.create("dummy.apks"))
+          .setApksArchivePath(Paths.get("test.apks"))
           .setGetSizeSubCommand(GetSizeSubcommand.TOTAL);
 
   @Test
@@ -425,7 +426,7 @@ public class VariantTotalSizeAggregatorTest {
                 .setDeviceSpec(mergeSpecs(abis("arm64-v8a"), locales("en"), density(XHDPI)))
                 .build());
     Throwable exception =
-        assertThrows(CommandExecutionException.class, variantTotalSizeAggregator::getSize);
+        assertThrows(IncompatibleDeviceException.class, variantTotalSizeAggregator::getSize);
     assertThat(exception)
         .hasMessageThat()
         .contains(
@@ -654,7 +655,6 @@ public class VariantTotalSizeAggregatorTest {
                 .setAbi("armeabi-v7a")
                 .setScreenDensity("XHDPI")
                 .setSdkVersion("1-20")
-                .setLocale("")
                 .build(),
             20L);
   }

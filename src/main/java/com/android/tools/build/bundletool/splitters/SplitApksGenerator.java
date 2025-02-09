@@ -16,62 +16,131 @@
 
 package com.android.tools.build.bundletool.splitters;
 
-import static com.android.tools.build.bundletool.model.targeting.TargetingUtils.generateAllVariantTargetings;
-import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
+import com.android.bundle.FeatureModulesConfigProto.FeatureModulesCustomConfig;
 import com.android.bundle.Targeting.VariantTargeting;
+import com.android.tools.build.bundletool.commands.BuildApksModule.MinModulesToEnableFeatureModulesConfig;
+import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
+import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
+import com.android.tools.build.bundletool.model.BundleModuleName;
 import com.android.tools.build.bundletool.model.ModuleSplit;
+import com.android.tools.build.bundletool.model.RequiredSplitTypesInjector;
+import com.android.tools.build.bundletool.model.SourceStamp;
+import com.android.tools.build.bundletool.model.SourceStampConstants.StampType;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import java.util.Optional;
+import javax.inject.Inject;
 
 /** Generates split APKs. */
 public final class SplitApksGenerator {
 
-  private final ImmutableList<BundleModule> modules;
-  private final ApkGenerationConfiguration apkGenerationConfiguration;
-  private final Version bundleVersion;
+  private final Version bundletoolVersion;
+  private final Optional<SourceStamp> stampSource;
+  private final VariantTargetingGenerator variantTargetingGenerator;
+  private final AppBundle appBundle;
+  private final Optional<FeatureModulesCustomConfig> featureModulesCustomConfig;
+  private final int minModulesToEnableFeatureModulesConfig;
 
+  @Inject
   public SplitApksGenerator(
-      ImmutableList<BundleModule> modules,
-      Version bundleVersion,
-      ApkGenerationConfiguration apkGenerationConfiguration) {
-    this.modules = checkNotNull(modules);
-    this.bundleVersion = checkNotNull(bundleVersion);
-    this.apkGenerationConfiguration = checkNotNull(apkGenerationConfiguration);
+      Version bundletoolVersion,
+      Optional<SourceStamp> stampSource,
+      VariantTargetingGenerator variantTargetingGenerator,
+      AppBundle appBundle,
+      Optional<FeatureModulesCustomConfig> featureModulesCustomConfig,
+      @MinModulesToEnableFeatureModulesConfig
+          Optional<Integer> minModulesToEnableFeatureModulesConfig) {
+    this.bundletoolVersion = bundletoolVersion;
+    this.stampSource = stampSource;
+    this.variantTargetingGenerator = variantTargetingGenerator;
+    this.appBundle = appBundle;
+    this.featureModulesCustomConfig = featureModulesCustomConfig;
+    this.minModulesToEnableFeatureModulesConfig = minModulesToEnableFeatureModulesConfig.orElse(0);
   }
 
-  public ImmutableList<ModuleSplit> generateSplits() {
-    ImmutableSet<VariantTargeting> variantTargetings = generateVariants();
-    return variantTargetings.stream()
-        .flatMap(variantTargeting -> generateSplitApks(variantTargeting).stream())
+  public ImmutableList<ModuleSplit> generateSplits(
+      ImmutableList<BundleModule> modules, ApkGenerationConfiguration apkGenerationConfiguration) {
+    return variantTargetingGenerator
+        .generateVariantTargetings(modules, apkGenerationConfiguration)
+        .stream()
+        .flatMap(
+            variantTargeting ->
+                generateSplitApks(modules, apkGenerationConfiguration, variantTargeting).stream())
         .collect(toImmutableList());
   }
 
-  private ImmutableSet<VariantTargeting> generateVariants() {
-    ImmutableSet.Builder<VariantTargeting> builder = ImmutableSet.builder();
-    for (BundleModule module : modules) {
-      VariantGenerator variantGenerator = new VariantGenerator(module, apkGenerationConfiguration);
-      ImmutableSet<VariantTargeting> splitApks = variantGenerator.generateVariants();
-      builder.addAll(splitApks);
-    }
-    return generateAllVariantTargetings(builder.build());
-  }
-
-  private ImmutableList<ModuleSplit> generateSplitApks(VariantTargeting variantTargeting) {
+  private ImmutableList<ModuleSplit> generateSplitApks(
+      ImmutableList<BundleModule> modules,
+      ApkGenerationConfiguration commonApkGenerationConfiguration,
+      VariantTargeting variantTargeting) {
+    ImmutableList<BundleModule> modulesForVariant = getModulesForVariant(modules, variantTargeting);
     ImmutableSet<String> allModuleNames =
-        modules.stream().map(module -> module.getName().getName()).collect(toImmutableSet());
+        modulesForVariant.stream()
+            .map(module -> module.getName().getName())
+            .collect(toImmutableSet());
     ImmutableList.Builder<ModuleSplit> splits = ImmutableList.builder();
 
-    for (BundleModule module : modules) {
+    for (BundleModule module : modulesForVariant) {
       ModuleSplitter moduleSplitter =
-          new ModuleSplitter(
-              module, bundleVersion, apkGenerationConfiguration, variantTargeting, allModuleNames);
+          ModuleSplitter.create(
+              module,
+              bundletoolVersion,
+              appBundle,
+              getApkGenerationConfigurationForModule(
+                  module,
+                  commonApkGenerationConfiguration,
+                  /* enableFeatureModulesConfig= */ modules.size()
+                      >= minModulesToEnableFeatureModulesConfig),
+              variantTargeting,
+              allModuleNames,
+              stampSource.map(SourceStamp::getSource),
+              StampType.STAMP_TYPE_DISTRIBUTION_APK);
       splits.addAll(moduleSplitter.splitModule());
     }
-    return splits.build();
+
+    ImmutableList<BundleModuleName> nonRemovableModules =
+        modulesForVariant.stream()
+            .filter(module -> module.getAndroidManifest().isAlwaysInstalledModule())
+            .map(BundleModule::getName)
+            .collect(toImmutableList());
+
+    return RequiredSplitTypesInjector.injectSplitTypeValidation(
+        splits.build(), nonRemovableModules);
+  }
+
+  private ImmutableList<BundleModule> getModulesForVariant(
+      ImmutableList<BundleModule> modules, VariantTargeting variantTargeting) {
+    if (variantTargeting.getSdkRuntimeTargeting().getRequiresSdkRuntime()) {
+      return modules.stream()
+          .filter(module -> !module.getModuleType().equals(ModuleType.SDK_DEPENDENCY_MODULE))
+          .collect(toImmutableList());
+    }
+    return modules;
+  }
+
+  private ApkGenerationConfiguration getApkGenerationConfigurationForModule(
+      BundleModule module,
+      ApkGenerationConfiguration commonGenerationConfig,
+      boolean enableFeatureModulesConfig) {
+    if (module.getModuleType().equals(ModuleType.SDK_DEPENDENCY_MODULE)) {
+      // We never generate splits for runtime-enabled SDK dependency modules.
+      return ApkGenerationConfiguration.getDefaultInstance();
+    }
+    if (enableFeatureModulesConfig
+        && featureModulesCustomConfig.isPresent()
+        && featureModulesCustomConfig
+            .get()
+            .getDisableConfigSplitsModulesList()
+            .contains(module.getName().getName())) {
+      return commonGenerationConfig.toBuilder()
+          .setOptimizationDimensions(ImmutableSet.of())
+          .build();
+    }
+    return commonGenerationConfig;
   }
 }

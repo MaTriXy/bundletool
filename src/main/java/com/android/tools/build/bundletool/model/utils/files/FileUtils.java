@@ -16,21 +16,27 @@
 
 package com.android.tools.build.bundletool.model.utils.files;
 
+import static com.google.common.base.StandardSystemProperty.USER_HOME;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.android.tools.build.bundletool.model.ZipPath;
+import com.android.tools.build.bundletool.model.utils.OsPlatform;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedSet;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Misc utilities for working with files. */
 public final class FileUtils {
+
+  private static final Pattern HOME_DIRECTORY_ALIAS = Pattern.compile("^~");
 
   /** Creates the parent directories of the given path. */
   public static void createParentDirectories(Path path) {
@@ -52,8 +58,11 @@ public final class FileUtils {
   }
 
   /** Gets the extension of the path file. */
-  public static String getFileExtension(Path path) {
-    Path name = path.getFileName();
+  public static String getFileExtension(ZipPath path) {
+    if (path.getNameCount() == 0) {
+      return "";
+    }
+    ZipPath name = path.getFileName();
 
     // null for empty paths and root-only paths
     if (name == null) {
@@ -81,22 +90,15 @@ public final class FileUtils {
     return walkOrderedSet.build().asList();
   }
 
-  /**
-   * Compares byte contents of the two {@link InputStream} instances for equality, returning as soon
-   * as a difference is found.
-   */
-  public static boolean equalContent(InputStream is1, InputStream is2) throws IOException {
-    try (InputStream bufferedInputStream1 = BufferedIo.makeBuffered(is1);
-        InputStream bufferedInputStream2 = BufferedIo.makeBuffered(is2)) {
-
-      int c1 = 0;
-      int c2 = 0;
-      while (c1 != -1 && c2 != -1 && c1 == c2) {
-        c1 = bufferedInputStream1.read();
-        c2 = bufferedInputStream2.read();
-      }
-      return c1 == c2;
+  /** Converts a path string to a {@code Path}. */
+  public static Path getPath(String path) {
+    if (!OsPlatform.getCurrentPlatform().equals(OsPlatform.WINDOWS)) {
+      path =
+          HOME_DIRECTORY_ALIAS
+              .matcher(path)
+              .replaceFirst(Matcher.quoteReplacement(USER_HOME.value()));
     }
+    return Paths.get(path);
   }
 
   // Not meant to be instantiated.

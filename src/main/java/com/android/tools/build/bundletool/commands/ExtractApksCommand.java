@@ -16,36 +16,48 @@
 
 package com.android.tools.build.bundletool.commands;
 
+import static com.android.tools.build.bundletool.device.LocalTestingPathResolver.resolveLocalTestingPath;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkDirectoryExists;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndReadable;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.MoreCollectors.toOptional;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.android.bundle.Commands.AssetModuleMetadata;
 import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Commands.BuildApksResult;
-import com.android.bundle.Commands.DeliveryType;
+import com.android.bundle.Commands.DefaultTargetingValue;
+import com.android.bundle.Commands.ExtractApksResult;
+import com.android.bundle.Commands.ExtractedApk;
+import com.android.bundle.Commands.LocalTestingInfoForMetadata;
+import com.android.bundle.Commands.Variant;
+import com.android.bundle.Config.SplitDimension.Value;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.tools.build.bundletool.commands.CommandHelp.CommandDescription;
 import com.android.tools.build.bundletool.commands.CommandHelp.FlagDescription;
 import com.android.tools.build.bundletool.device.ApkMatcher;
+import com.android.tools.build.bundletool.device.ApkMatcher.GeneratedApk;
 import com.android.tools.build.bundletool.device.DeviceSpecParser;
-import com.android.tools.build.bundletool.device.IncompatibleDeviceException;
 import com.android.tools.build.bundletool.flags.Flag;
 import com.android.tools.build.bundletool.flags.ParsedFlags;
-import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.AndroidManifest;
+import com.android.tools.build.bundletool.model.exceptions.IncompatibleDeviceException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
 import com.android.tools.build.bundletool.model.utils.FileNames;
 import com.android.tools.build.bundletool.model.utils.ResultUtils;
-import com.android.tools.build.bundletool.model.utils.files.BufferedIo;
 import com.android.tools.build.bundletool.model.utils.files.FileUtils;
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
+import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
+import com.google.protobuf.util.JsonFormat;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -68,11 +80,14 @@ public abstract class ExtractApksCommand {
   public static final String COMMAND_NAME = "extract-apks";
   static final String ALL_MODULES_SHORTCUT = "_ALL_";
 
+  private static final String METADATA_FILE = "metadata.json";
+
   private static final Flag<Path> APKS_ARCHIVE_FILE_FLAG = Flag.path("apks");
   private static final Flag<Path> DEVICE_SPEC_FLAG = Flag.path("device-spec");
   private static final Flag<Path> OUTPUT_DIRECTORY = Flag.path("output-dir");
   private static final Flag<ImmutableSet<String>> MODULES_FLAG = Flag.stringSet("modules");
   private static final Flag<Boolean> INSTANT_FLAG = Flag.booleanFlag("instant");
+  private static final Flag<Boolean> INCLUDE_METADATA_FLAG = Flag.booleanFlag("include-metadata");
 
   public abstract Path getApksArchivePath();
 
@@ -82,13 +97,19 @@ public abstract class ExtractApksCommand {
 
   public abstract Optional<ImmutableSet<String>> getModules();
 
+  public abstract boolean getIncludeInstallTimeAssetModules();
+
   /** Gets whether instant APKs should be extracted. */
   public abstract boolean getInstant();
+
+  public abstract boolean getIncludeMetadata();
 
 
   public static Builder builder() {
     return new AutoValue_ExtractApksCommand.Builder()
-        .setInstant(false);
+        .setInstant(false)
+        .setIncludeMetadata(false)
+        .setIncludeInstallTimeAssetModules(true);
   }
 
   /** Builder for the {@link ExtractApksCommand}. */
@@ -104,7 +125,19 @@ public abstract class ExtractApksCommand {
 
     public abstract Builder setOutputDirectory(Path outputDirectory);
 
+    /**
+     * Sets the required modules to extract.
+     *
+     * <p>All install-time feature modules and asset modules are extracted by default. You can
+     * exclude install-time asset modules by passing {@code false} to {@link
+     * #setIncludeInstallTimeAssetModules}.
+     *
+     * <p>"_ALL_" extracts all modules.
+     */
     public abstract Builder setModules(ImmutableSet<String> modules);
+
+    /** Whether to extract install-time asset modules (default = true). */
+    public abstract Builder setIncludeInstallTimeAssetModules(boolean shouldInclude);
 
     /**
      * Sets whether instant APKs should be extracted.
@@ -114,14 +147,16 @@ public abstract class ExtractApksCommand {
      */
     public abstract Builder setInstant(boolean instant);
 
+    public abstract Builder setIncludeMetadata(boolean outputMetadata);
+
 
     abstract ExtractApksCommand autoBuild();
 
     /**
      * Builds the command
      *
-     * @throws ValidationException if the device spec is invalid. See {@link
-     *     DeviceSpecParser#validateDeviceSpec}
+     * @throws com.android.tools.build.bundletool.model.exceptions.InvalidDeviceSpecException if the
+     *     device spec is invalid. See {@link DeviceSpecParser#validateDeviceSpec}
      */
     public ExtractApksCommand build() {
       ExtractApksCommand command = autoBuild();
@@ -138,6 +173,7 @@ public abstract class ExtractApksCommand {
     Optional<Path> outputDirectory = OUTPUT_DIRECTORY.getValue(flags);
     Optional<ImmutableSet<String>> modules = MODULES_FLAG.getValue(flags);
     Optional<Boolean> instant = INSTANT_FLAG.getValue(flags);
+    Optional<Boolean> includeMetadata = INCLUDE_METADATA_FLAG.getValue(flags);
     flags.checkNoUnknownFlags();
 
     ExtractApksCommand.Builder command = builder();
@@ -154,6 +190,7 @@ public abstract class ExtractApksCommand {
     modules.ifPresent(command::setModules);
 
     instant.ifPresent(command::setInstant);
+    includeMetadata.ifPresent(command::setIncludeMetadata);
 
 
     return command.build();
@@ -168,48 +205,68 @@ public abstract class ExtractApksCommand {
     validateInput();
 
     BuildApksResult toc = ResultUtils.readTableOfContents(getApksArchivePath());
+    DeviceSpec deviceSpec = applyDefaultsToDeviceSpec(getDeviceSpec(), toc);
     Optional<ImmutableSet<String>> requestedModuleNames =
-        getModules()
-            .map(
-                modules ->
-                    modules.contains(ALL_MODULES_SHORTCUT)
-                        ? Stream.concat(
-                                toc.getVariantList().stream()
-                                    .flatMap(variant -> variant.getApkSetList().stream())
-                                    .map(apkSet -> apkSet.getModuleMetadata().getName()),
-                                toc.getAssetSliceSetList().stream()
-                                    .filter(
-                                        sliceSet ->
-                                            sliceSet
-                                                .getAssetModuleMetadata()
-                                                .getDeliveryType()
-                                                .equals(DeliveryType.INSTALL_TIME))
-                                    .map(AssetSliceSet::getAssetModuleMetadata)
-                                    .map(AssetModuleMetadata::getName))
-                            .collect(toImmutableSet())
-                        : modules);
-    validateAssetModules(toc, requestedModuleNames);
+        getModules().map(modules -> resolveRequestedModules(modules, toc, deviceSpec));
 
-    ApkMatcher apkMatcher = new ApkMatcher(getDeviceSpec(), requestedModuleNames, getInstant());
-    ImmutableList<ZipPath> matchedApks = apkMatcher.getMatchingApks(toc);
+    ApkMatcher apkMatcher =
+        new ApkMatcher(
+            deviceSpec,
+            requestedModuleNames,
+            getIncludeInstallTimeAssetModules(),
+            getInstant(),
+            /* ensureDensityAndAbiApksMatched= */ true);
+    ImmutableList<GeneratedApk> generatedApks = apkMatcher.getMatchingApks(toc);
 
-    if (matchedApks.isEmpty()) {
-      throw new IncompatibleDeviceException("No compatible APKs found for the device.");
+    if (generatedApks.isEmpty()) {
+      throw IncompatibleDeviceException.builder()
+          .withUserMessage("No compatible APKs found for the device.")
+          .build();
     }
 
 
     if (Files.isDirectory(getApksArchivePath())) {
-      return matchedApks.stream()
-          .map(matchedApk -> getApksArchivePath().resolve(matchedApk.toString()))
+      return generatedApks.stream()
+          .map(matchedApk -> getApksArchivePath().resolve(matchedApk.getPath().toString()))
           .collect(toImmutableList());
     } else {
-      return extractMatchedApksFromApksArchive(matchedApks);
+      return extractMatchedApksFromApksArchive(generatedApks, toc);
     }
+  }
+
+  static ImmutableSet<String> resolveRequestedModules(
+      ImmutableSet<String> requestedModules, BuildApksResult toc, DeviceSpec deviceSpec) {
+    return requestedModules.contains(ALL_MODULES_SHORTCUT)
+        ? Stream.concat(
+                getVariantsMatchingSdkRuntimeTargeting(toc, deviceSpec).stream()
+                    .flatMap(variant -> variant.getApkSetList().stream())
+                    .map(apkSet -> apkSet.getModuleMetadata().getName()),
+                toc.getAssetSliceSetList().stream()
+                    .map(AssetSliceSet::getAssetModuleMetadata)
+                    .map(AssetModuleMetadata::getName))
+            .collect(toImmutableSet())
+        : requestedModules;
+  }
+
+  private static ImmutableSet<Variant> getVariantsMatchingSdkRuntimeTargeting(
+      BuildApksResult toc, DeviceSpec deviceSpec) {
+    ImmutableSet<Variant> sdkRuntimeVariants =
+        toc.getVariantList().stream()
+            .filter(
+                variant -> variant.getTargeting().getSdkRuntimeTargeting().getRequiresSdkRuntime())
+            .collect(toImmutableSet());
+    if (deviceSpec.getSdkRuntime().getSupported() && !sdkRuntimeVariants.isEmpty()) {
+      return sdkRuntimeVariants;
+    }
+    return Sets.difference(ImmutableSet.copyOf(toc.getVariantList()), sdkRuntimeVariants)
+        .immutableCopy();
   }
 
   private void validateInput() {
     if (getModules().isPresent() && getModules().get().isEmpty()) {
-      throw new ValidationException("The set of modules cannot be empty.");
+      throw InvalidCommandException.builder()
+          .withInternalMessage("The set of modules cannot be empty.")
+          .build();
     }
 
     if (Files.isDirectory(getApksArchivePath())) {
@@ -217,41 +274,18 @@ public abstract class ExtractApksCommand {
           !getOutputDirectory().isPresent(),
           "Output directory should not be set when APKs are inside directory.");
       checkDirectoryExists(getApksArchivePath());
-      checkFileExistsAndReadable(getApksArchivePath().resolve(FileNames.TABLE_OF_CONTENTS_FILE));
+      Path tocFile =
+          Files.exists(getApksArchivePath().resolve(FileNames.TABLE_OF_CONTENTS_JSON_FILE))
+              ? getApksArchivePath().resolve(FileNames.TABLE_OF_CONTENTS_JSON_FILE)
+              : getApksArchivePath().resolve(FileNames.TABLE_OF_CONTENTS_FILE);
+      checkFileExistsAndReadable(tocFile);
     } else {
       checkFileExistsAndReadable(getApksArchivePath());
     }
   }
 
-  /** Check that none of the requested modules is an asset module that is not install-time. */
-  private static void validateAssetModules(
-      BuildApksResult toc, Optional<ImmutableSet<String>> requestedModuleNames) {
-    if (requestedModuleNames.isPresent()) {
-      ImmutableList<String> requestedNonInstallTimeAssetModules =
-          toc.getAssetSliceSetList().stream()
-              .filter(
-                  sliceSet ->
-                      !sliceSet
-                          .getAssetModuleMetadata()
-                          .getDeliveryType()
-                          .equals(DeliveryType.INSTALL_TIME))
-              .map(AssetSliceSet::getAssetModuleMetadata)
-              .map(AssetModuleMetadata::getName)
-              .filter(requestedModuleNames.get()::contains)
-              .collect(toImmutableList());
-      if (!requestedNonInstallTimeAssetModules.isEmpty()) {
-        throw ValidationException.builder()
-            .withMessage(
-                String.format(
-                    "The following requested asset packs do not have install time delivery: %s.",
-                    requestedNonInstallTimeAssetModules))
-            .build();
-      }
-    }
-  }
-
   private ImmutableList<Path> extractMatchedApksFromApksArchive(
-      ImmutableList<ZipPath> matchedApkPaths) {
+      ImmutableList<GeneratedApk> generatedApks, BuildApksResult toc) {
     Path outputDirectoryPath =
         getOutputDirectory().orElseGet(ExtractApksCommand::createTempDirectory);
 
@@ -266,18 +300,22 @@ public abstract class ExtractApksCommand {
 
     ImmutableList.Builder<Path> builder = ImmutableList.builder();
     try (ZipFile apksArchive = new ZipFile(getApksArchivePath().toFile())) {
-      for (ZipPath matchedApk : matchedApkPaths) {
-        ZipEntry entry = apksArchive.getEntry(matchedApk.toString());
+      for (GeneratedApk matchedApk : generatedApks) {
+        ZipEntry entry = apksArchive.getEntry(matchedApk.getPath().toString());
         checkNotNull(entry);
-        Path extractedApkPath = outputDirectoryPath.resolve(matchedApk.getFileName().toString());
-        try (InputStream inputStream = BufferedIo.inputStream(apksArchive, entry);
-            OutputStream outputApk = BufferedIo.outputStream(extractedApkPath)) {
+        Path extractedApkPath =
+            outputDirectoryPath.resolve(matchedApk.getPath().getFileName().toString());
+        try (InputStream inputStream = apksArchive.getInputStream(entry);
+            OutputStream outputApk = Files.newOutputStream(extractedApkPath)) {
           ByteStreams.copy(inputStream, outputApk);
           builder.add(extractedApkPath);
         } catch (IOException e) {
           throw new UncheckedIOException(
               String.format("Error while extracting APK '%s' from the APK Set.", matchedApk), e);
         }
+      }
+      if (getIncludeMetadata()) {
+        produceCommandMetadata(generatedApks, toc, outputDirectoryPath);
       }
     } catch (IOException e) {
       throw new UncheckedIOException(
@@ -289,6 +327,41 @@ public abstract class ExtractApksCommand {
     return builder.build();
   }
 
+  private static void produceCommandMetadata(
+      ImmutableList<GeneratedApk> generatedApks, BuildApksResult toc, Path outputDir) {
+
+    ImmutableList<ExtractedApk> apks =
+        generatedApks.stream()
+            .map(
+                apk ->
+                    ExtractedApk.newBuilder()
+                        .setPath(apk.getPath().getFileName().toString())
+                        .setModuleName(apk.getModuleName())
+                        .setDeliveryType(apk.getDeliveryType())
+                        .build())
+            .collect(toImmutableList());
+
+    try {
+      JsonFormat.Printer printer = JsonFormat.printer();
+      ExtractApksResult.Builder builder = ExtractApksResult.newBuilder();
+      if (toc.getLocalTestingInfo().getEnabled()) {
+        builder.setLocalTestingInfo(createLocalTestingInfo(toc));
+      }
+      String metadata = printer.print(builder.addAllApks(apks).build());
+      Files.write(outputDir.resolve(METADATA_FILE), metadata.getBytes(UTF_8));
+    } catch (IOException e) {
+      throw new UncheckedIOException("Error while writing metadata.json.", e);
+    }
+  }
+
+  private static LocalTestingInfoForMetadata createLocalTestingInfo(BuildApksResult toc) {
+    String localTestingPath = toc.getLocalTestingInfo().getLocalTestingPath();
+    String packageName = toc.getPackageName();
+    return LocalTestingInfoForMetadata.newBuilder()
+        .setLocalTestingDir(resolveLocalTestingPath(localTestingPath, Optional.of(packageName)))
+        .build();
+  }
+
   private static Path createTempDirectory() {
     try {
       return Files.createTempDirectory("bundletool-extracted-apks");
@@ -296,6 +369,55 @@ public abstract class ExtractApksCommand {
       throw new UncheckedIOException(
           "Unable to create a temporary directory for extracted APKs.", e);
     }
+  }
+
+  private static DeviceSpec applyDefaultsToDeviceSpec(DeviceSpec deviceSpec, BuildApksResult toc) {
+    DeviceSpec.Builder builder = deviceSpec.toBuilder();
+    if (!deviceSpec.hasDeviceTier()) {
+      int defaultDeviceTier =
+          toc.getDefaultTargetingValueList().stream()
+              .filter(
+                  defaultTargetingValue ->
+                      defaultTargetingValue.getDimension().equals(Value.DEVICE_TIER))
+              .map(DefaultTargetingValue::getDefaultValue)
+              // Don't fail if the default value is empty.
+              .filter(defaultValue -> !defaultValue.isEmpty())
+              .map(Integer::parseInt)
+              .collect(toOptional())
+              .orElse(0);
+      builder.setDeviceTier(Int32Value.of(defaultDeviceTier));
+    }
+    if (!deviceSpec.hasCountrySet()) {
+      String defaultCountrySet =
+          toc.getDefaultTargetingValueList().stream()
+              .filter(
+                  defaultTargetingValue ->
+                      defaultTargetingValue.getDimension().equals(Value.COUNTRY_SET))
+              .map(DefaultTargetingValue::getDefaultValue)
+              .filter(defaultValue -> !defaultValue.isEmpty())
+              .collect(toOptional())
+              .orElse("");
+      builder.setCountrySet(StringValue.of(defaultCountrySet));
+    }
+    if (deviceSpec.getDeviceGroupsCount() == 0) {
+      String defaultDeviceGroup =
+          toc.getDefaultTargetingValueList().stream()
+              .filter(
+                  defaultTargetingValue ->
+                      defaultTargetingValue.getDimension().equals(Value.DEVICE_GROUP))
+              .map(DefaultTargetingValue::getDefaultValue)
+              .filter(defaultValue -> !defaultValue.isEmpty())
+              .collect(toOptional())
+              .orElse("");
+      builder.addDeviceGroups(defaultDeviceGroup);
+    }
+    if (!deviceSpec.hasSdkRuntime()) {
+      builder
+          .getSdkRuntimeBuilder()
+          .setSupported(deviceSpec.getSdkVersion() >= AndroidManifest.SDK_SANDBOX_MIN_VERSION);
+    }
+
+    return builder.build();
   }
 
   public static CommandHelp help() {
@@ -311,8 +433,9 @@ public abstract class ExtractApksCommand {
                 .setFlagName(APKS_ARCHIVE_FILE_FLAG.getName())
                 .setExampleValue("archive.apks")
                 .setDescription(
-                    "Path to the archive file generated by the '%s' command.",
-                    BuildApksCommand.COMMAND_NAME)
+                    "Path to the archive file generated by either the '%s' command or the '%s'"
+                        + " command.",
+                    BuildApksCommand.COMMAND_NAME, BuildSdkApksCommand.COMMAND_NAME)
                 .build())
         .addFlag(
             FlagDescription.builder()
@@ -350,6 +473,14 @@ public abstract class ExtractApksCommand {
                 .setDescription(
                     "When set, APKs of the instant modules will be extracted instead of the "
                         + "installable APKs.")
+                .build())
+        .addFlag(
+            FlagDescription.builder()
+                .setFlagName(INCLUDE_METADATA_FLAG.getName())
+                .setOptional(true)
+                .setDescription(
+                    "When set, metadata.json will be produced to the output directory with"
+                        + " description about extracted APKs.")
                 .build())
         .build();
   }

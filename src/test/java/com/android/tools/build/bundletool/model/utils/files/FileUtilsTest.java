@@ -16,10 +16,12 @@
 
 package com.android.tools.build.bundletool.model.utils.files;
 
+import static com.google.common.base.StandardSystemProperty.OS_NAME;
+import static com.google.common.base.StandardSystemProperty.USER_HOME;
 import static com.google.common.truth.Truth.assertThat;
-import static java.nio.charset.StandardCharsets.UTF_8;
 
-import java.io.ByteArrayInputStream;
+import com.android.tools.build.bundletool.model.ZipPath;
+import com.android.tools.build.bundletool.model.utils.OsPlatform;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -62,93 +64,91 @@ public class FileUtilsTest {
   }
 
   @Test
-  public void equalContent_emptyStreams() throws Exception {
-    String data = "";
-
-    boolean equal =
-        FileUtils.equalContent(
-            new ByteArrayInputStream(data.getBytes(UTF_8)),
-            new ByteArrayInputStream(data.getBytes(UTF_8)));
-
-    assertThat(equal).isTrue();
-  }
-
-  @Test
-  public void equalContent_sameLengthAndContent() throws Exception {
-    String data = "abc";
-
-    boolean equal =
-        FileUtils.equalContent(
-            new ByteArrayInputStream(data.getBytes(UTF_8)),
-            new ByteArrayInputStream(data.getBytes(UTF_8)));
-
-    assertThat(equal).isTrue();
-  }
-
-  @Test
-  public void equalContent_sameLengthAndDifferentContent() throws Exception {
-    String data1 = "abX";
-    String data2 = "abY";
-
-    boolean equal =
-        FileUtils.equalContent(
-            new ByteArrayInputStream(data1.getBytes(UTF_8)),
-            new ByteArrayInputStream(data2.getBytes(UTF_8)));
-
-    assertThat(equal).isFalse();
-  }
-
-  @Test
-  public void equalContent_differentLength() throws Exception {
-    String data1 = "ab";
-    String data2 = "abc";
-
-    boolean equal =
-        FileUtils.equalContent(
-            new ByteArrayInputStream(data1.getBytes(UTF_8)),
-            new ByteArrayInputStream(data2.getBytes(UTF_8)));
-
-    assertThat(equal).isFalse();
-  }
-
-  @Test
   public void getExtension_emptyFile() {
-    assertThat(FileUtils.getFileExtension(Paths.get(""))).isEmpty();
+    assertThat(FileUtils.getFileExtension(ZipPath.create(""))).isEmpty();
   }
 
   @Test
   public void getExtension_fileNoExtension() {
-    assertThat(FileUtils.getFileExtension(Paths.get("file"))).isEmpty();
+    assertThat(FileUtils.getFileExtension(ZipPath.create("file"))).isEmpty();
   }
 
   @Test
   public void getExtension_fileInDirectoryNoExtension() {
-    assertThat(FileUtils.getFileExtension(Paths.get("directory", "file"))).isEmpty();
+    assertThat(FileUtils.getFileExtension(ZipPath.create("directory/file"))).isEmpty();
   }
 
   @Test
   public void getExtension_fileInDirectoryNoExtension_EndWithDot() {
-    assertThat(FileUtils.getFileExtension(Paths.get("directory", "file."))).isEmpty();
+    assertThat(FileUtils.getFileExtension(ZipPath.create("directory/file."))).isEmpty();
   }
 
   @Test
   public void getExtension_fileInDirectoryOneLetterExtension() {
-    assertThat(FileUtils.getFileExtension(Paths.get("directory", "file.a"))).isEqualTo("a");
+    assertThat(FileUtils.getFileExtension(ZipPath.create("directory/file.a"))).isEqualTo("a");
   }
 
   @Test
   public void getExtension_fileInDirectorySimpleExtension() {
-    assertThat(FileUtils.getFileExtension(Paths.get("directory", "file.txt"))).isEqualTo("txt");
+    assertThat(FileUtils.getFileExtension(ZipPath.create("directory/file.txt"))).isEqualTo("txt");
   }
 
   @Test
   public void getExtension_fileInDirectorySimpleExtension_EndsWithDot() {
-    assertThat(FileUtils.getFileExtension(Paths.get("directory", "file.txt."))).isEqualTo("");
+    assertThat(FileUtils.getFileExtension(ZipPath.create("directory/file.txt."))).isEmpty();
   }
 
   @Test
   public void getExtension_fileInDirectoryDoubleExtension() {
-    assertThat(FileUtils.getFileExtension(Paths.get("directory", "file.pb.json")))
+    assertThat(FileUtils.getFileExtension(ZipPath.create("directory/file.pb.json")))
         .isEqualTo("json");
+  }
+
+  @Test
+  public void getPath() {
+    assertThat((Object) FileUtils.getPath("/my/path")).isEqualTo(Paths.get("/my/path"));
+  }
+
+  @Test
+    public void getPath_tildeInPathStart_linux() {
+    String currentSystem = OS_NAME.value();
+    try {
+      System.setProperty("os.name", "Linux");
+      assertThat(OsPlatform.getCurrentPlatform()).isEqualTo(OsPlatform.LINUX);
+      assertThat((Object) FileUtils.getPath("~/my/path"))
+          .isEqualTo(Paths.get(USER_HOME.value(), "/my/path"));
+    } finally {
+      System.setProperty("os.name", currentSystem);
+    }
+  }
+
+  @Test
+    public void getPath_tildeInPathStart_macos() {
+    String currentSystem = OS_NAME.value();
+    try {
+      System.setProperty("os.name", "Mac OS X");
+      assertThat(OsPlatform.getCurrentPlatform()).isEqualTo(OsPlatform.MACOS);
+      assertThat((Object) FileUtils.getPath("~/my/path"))
+          .isEqualTo(Paths.get(USER_HOME.value(), "/my/path"));
+    } finally {
+      System.setProperty("os.name", currentSystem);
+    }
+  }
+
+  @Test
+  public void getPath_tildeInPathMiddle_nonWindows() {
+    assertThat((Object) FileUtils.getPath("/my/~/path")).isEqualTo(Paths.get("/my/~/path"));
+  }
+
+  @Test
+    public void getPath_tildeInPath_windows() {
+    String currentSystem = OS_NAME.value();
+    try {
+      System.setProperty("os.name", "Windows");
+      assertThat(OsPlatform.getCurrentPlatform()).isEqualTo(OsPlatform.WINDOWS);
+      assertThat((Object) FileUtils.getPath("~\\my\\path")).isEqualTo(Paths.get("~\\my\\path"));
+    } finally {
+      System.setProperty("os.name", currentSystem);
+    }
   }
 }

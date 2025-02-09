@@ -16,12 +16,16 @@
 
 package com.android.tools.build.bundletool.model.targeting;
 
-/**
- * A dimension recognized by the bundletool for targeting.
- */
+/** A dimension recognized by the bundletool for targeting. */
 public enum TargetingDimension {
   ABI,
-  GRAPHICS_API,
   LANGUAGE,
-  TEXTURE_COMPRESSION_FORMAT;
+  TEXTURE_COMPRESSION_FORMAT,
+  /**
+   * @deprecated use DEVICE_GROUP instead.
+   */
+  @Deprecated
+  DEVICE_TIER,
+  DEVICE_GROUP,
+  COUNTRY_SET;
 }

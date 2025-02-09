@@ -22,12 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.android.aapt.Resources.ResourceTable;
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Config.SplitDimension;
+import com.android.bundle.Config.SplitDimension.Value;
+import com.android.bundle.Config.SuffixStripping;
 import com.android.tools.build.bundletool.model.AppBundle;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.utils.ResourcesUtils;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
 import com.android.tools.build.bundletool.testing.AppBundleBuilder;
 import com.android.tools.build.bundletool.testing.BundleConfigBuilder;
+import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.android.tools.build.bundletool.testing.ResourceTableBuilder;
 import java.io.IOException;
 import org.junit.Test;
@@ -57,9 +60,10 @@ public final class BundleConfigValidatorTest {
         createAppBundle(
             BundleConfigBuilder.create().clearCompression().addUncompressedGlob("res/raw\\"));
 
-    ValidationException e =
+    InvalidBundleException e =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(e).hasMessageThat().contains("Invalid uncompressed glob: 'res/raw\\'.");
   }
 
@@ -71,9 +75,10 @@ public final class BundleConfigValidatorTest {
                 .clearCompression()
                 .addUncompressedGlob("res\\\\raw\\\\**"));
 
-    ValidationException e =
+    InvalidBundleException e =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(e).hasMessageThat().contains("Invalid uncompressed glob: 'res\\\\raw\\\\**'.");
   }
 
@@ -85,9 +90,10 @@ public final class BundleConfigValidatorTest {
                 .clearCompression()
                 .addUncompressedGlob("res/raw/**\nassets/raw/**"));
 
-    ValidationException e =
+    InvalidBundleException e =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(e)
         .hasMessageThat()
         .contains("Invalid uncompressed glob: 'res/raw/**\nassets/raw/**'.");
@@ -114,9 +120,10 @@ public final class BundleConfigValidatorTest {
                 .addSplitDimension(SplitDimension.Value.ABI)
                 .addSplitDimension(SplitDimension.Value.ABI));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(exception).hasMessageThat().contains("duplicate split dimensions:");
   }
 
@@ -142,12 +149,109 @@ public final class BundleConfigValidatorTest {
                 .clearOptimizations()
                 .addSplitDimension(SplitDimension.newBuilder().setValueValue(1234).build()));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(exception)
         .hasMessageThat()
         .contains("BundleConfig.pb contains an unrecognized split dimension.");
+  }
+
+  @Test
+  public void optimizations_tcfDimensionSuffixStripping_ok() throws Exception {
+    AppBundle appBundle =
+        createAppBundle(
+            BundleConfigBuilder.create()
+                .clearOptimizations()
+                .addSplitDimension(
+                    SplitDimension.newBuilder()
+                        .setValueValue(Value.TEXTURE_COMPRESSION_FORMAT_VALUE)
+                        .setSuffixStripping(
+                            SuffixStripping.newBuilder().setEnabled(true).setDefaultSuffix("pvrtc"))
+                        .build()));
+
+    new BundleConfigValidator().validateBundle(appBundle);
+  }
+
+  @Test
+  public void optimizations_nonTcfDimensionsSuffixStrippingDisabled_ok() throws Exception {
+    AppBundle appBundle =
+        createAppBundle(
+            BundleConfigBuilder.create()
+                .clearOptimizations()
+                .addSplitDimension(
+                    SplitDimension.newBuilder()
+                        .setValueValue(Value.LANGUAGE_VALUE)
+                        .setSuffixStripping(SuffixStripping.newBuilder().setEnabled(false))
+                        .build()));
+
+    new BundleConfigValidator().validateBundle(appBundle);
+  }
+
+  @Test
+  public void optimizations_nonTcfDimensionsSuffixStripping_throws() throws Exception {
+    AppBundle appBundle =
+        createAppBundle(
+            BundleConfigBuilder.create()
+                .clearOptimizations()
+                .addSplitDimension(
+                    SplitDimension.newBuilder()
+                        .setValueValue(Value.LANGUAGE_VALUE)
+                        .setSuffixStripping(SuffixStripping.newBuilder().setEnabled(true))
+                        .build()));
+
+    InvalidBundleException exception =
+        assertThrows(
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
+    assertThat(exception)
+        .hasMessageThat()
+        .contains(
+            "Suffix stripping was enabled for an unsupported dimension. Supported dimensions are:"
+                + " TEXTURE_COMPRESSION_FORMAT, DEVICE_TIER, DEVICE_GROUP, COUNTRY_SET.");
+  }
+
+  @Test
+  public void optimizations_tcfDimensionSuffixStrippingWithoutDefault_ok() throws Exception {
+    AppBundle appBundle =
+        createAppBundle(
+            BundleConfigBuilder.create()
+                .clearOptimizations()
+                .addSplitDimension(
+                    SplitDimension.newBuilder()
+                        .setValueValue(Value.TEXTURE_COMPRESSION_FORMAT_VALUE)
+                        .setSuffixStripping(SuffixStripping.newBuilder().setEnabled(true))
+                        .build()));
+
+    new BundleConfigValidator().validateBundle(appBundle);
+  }
+
+  @Test
+  public void optimizations_tcfDimensionSuffixStrippingWithInvalidDefault_throws()
+      throws Exception {
+    AppBundle appBundle =
+        createAppBundle(
+            BundleConfigBuilder.create()
+                .clearOptimizations()
+                .addSplitDimension(
+                    SplitDimension.newBuilder()
+                        .setValueValue(Value.TEXTURE_COMPRESSION_FORMAT_VALUE)
+                        .setSuffixStripping(
+                            SuffixStripping.newBuilder()
+                                .setEnabled(true)
+                                .setDefaultSuffix("unrecognized_tcf"))
+                        .build()));
+
+    InvalidBundleException exception =
+        assertThrows(
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
+    assertThat(exception)
+        .hasMessageThat()
+        .contains(
+            "The default texture compression format chosen for suffix stripping"
+                + " (\"unrecognized_tcf\") is not valid.");
   }
 
   @Test
@@ -159,10 +263,133 @@ public final class BundleConfigValidatorTest {
                 .addSplitDimension(SplitDimension.Value.ABI, /* negate= */ false)
                 .addSplitDimension(SplitDimension.Value.ABI, /* negate= */ true));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(exception).hasMessageThat().contains("duplicate split dimensions");
+  }
+
+  @Test
+  public void optimizations_defaultDeviceTier_untargeted_unspecified() throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .addModule(
+                new BundleModuleBuilder("base")
+                    .addFile("assets/textures#tcf_astc/level1.assets")
+                    .addFile("assets/textures#tcf_astc/level1.assets")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build());
+
+    new BundleConfigValidator().validateBundle(appBundleBuilder.build());
+  }
+
+  @Test
+  public void optimizations_defaultDeviceTier_targeted_specified() throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .setBundleConfig(
+                BundleConfigBuilder.create()
+                    .addSplitDimension(Value.DEVICE_TIER, false, false, "1")
+                    .build())
+            .addModule(
+                new BundleModuleBuilder("base")
+                    .addFile("assets/textures#tier_1/level1.assets")
+                    .addFile("assets/textures#tier_2/level1.assets")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build());
+
+    new BundleConfigValidator().validateBundle(appBundleBuilder.build());
+  }
+
+  @Test
+  public void optimizations_defaultDeviceTier_targeted_unspecified_success() throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .addModule(
+                new BundleModuleBuilder("base")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build())
+            .addModule(
+                new BundleModuleBuilder("a")
+                    .addFile("assets/textures#tier_1/level1.assets")
+                    .addFile("assets/textures#tier_2/level1.assets")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build());
+
+    new BundleConfigValidator().validateBundle(appBundleBuilder.build());
+  }
+
+  @Test
+  public void optimizations_defaultCountrySet_targeted_specified_success() throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .setBundleConfig(
+                BundleConfigBuilder.create()
+                    .addSplitDimension(Value.COUNTRY_SET, false, true, "")
+                    .build())
+            .addModule(
+                new BundleModuleBuilder("base")
+                    .addFile("assets/textures#countries_latam/level1.assets")
+                    .addFile("assets/textures#countries_sea/level1.assets")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build());
+
+    new BundleConfigValidator().validateBundle(appBundleBuilder.build());
+  }
+
+  @Test
+  public void optimizations_defaultCountrySet_targeted_unspecified_success() throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .addModule(
+                new BundleModuleBuilder("base")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build())
+            .addModule(
+                new BundleModuleBuilder("a")
+                    .addFile("assets/textures#countries_latam/level1.assets")
+                    .addFile("assets/textures#countries_sea/level1.assets")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build());
+
+    new BundleConfigValidator().validateBundle(appBundleBuilder.build());
+  }
+
+  @Test
+  public void optimizations_defaultDeviceGroup_targeted_specified_success() throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .setBundleConfig(
+                BundleConfigBuilder.create()
+                    .addSplitDimension(Value.DEVICE_GROUP, false, true, "a")
+                    .build())
+            .addModule(
+                new BundleModuleBuilder("base")
+                    .addFile("assets/textures#group_a/level1.assets")
+                    .addFile("assets/textures#group_b/level1.assets")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build());
+
+    new BundleConfigValidator().validateBundle(appBundleBuilder.build());
+  }
+
+  @Test
+  public void optimizations_defaultDeviceGroup_targeted_unspecified_success() throws Exception {
+    AppBundleBuilder appBundleBuilder =
+        new AppBundleBuilder()
+            .addModule(
+                new BundleModuleBuilder("base")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build())
+            .addModule(
+                new BundleModuleBuilder("a")
+                    .addFile("assets/textures#group_a/level1.assets")
+                    .addFile("assets/textures#group_b/level1.assets")
+                    .setManifest(androidManifest("com.test.app"))
+                    .build());
+
+    new BundleConfigValidator().validateBundle(appBundleBuilder.build());
   }
 
   @Test
@@ -183,9 +410,10 @@ public final class BundleConfigValidatorTest {
   public void version_invalid_throws() throws Exception {
     AppBundle appBundle = createAppBundle(BundleConfigBuilder.create().setVersion("blah"));
 
-    ValidationException e =
+    InvalidBundleException e =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(e).hasMessageThat().contains("Invalid version");
   }
 
@@ -237,9 +465,10 @@ public final class BundleConfigValidatorTest {
                         .setManifest(androidManifest("com.test.app")))
             .build();
 
-    ValidationException e =
+    InvalidBundleException e =
         assertThrows(
-            ValidationException.class, () -> new BundleConfigValidator().validateBundle(appBundle));
+            InvalidBundleException.class,
+            () -> new BundleConfigValidator().validateBundle(appBundle));
     assertThat(e)
         .hasMessageThat()
         .contains(

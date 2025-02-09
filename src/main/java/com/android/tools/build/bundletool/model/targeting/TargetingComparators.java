@@ -19,10 +19,12 @@ package com.android.tools.build.bundletool.model.targeting;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.getScreenDensityDpi;
 import static com.google.common.collect.Comparators.emptiesFirst;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.primitives.Booleans.falseFirst;
 import static java.util.Comparator.comparing;
 
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.Abi.AbiAlias;
+import com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Comparators;
@@ -45,7 +47,7 @@ public final class TargetingComparators {
    * This should verify the following statements in order:
    *
    * <ul>
-   *   <li>arm < x86 < mips
+   *   <li>arm < x86 < mips < riscv
    *   <li>32 bits < 64 bits
    *   <li>less recent version of CPU < more recent version of CPU
    */
@@ -57,7 +59,23 @@ public final class TargetingComparators {
           AbiAlias.X86,
           AbiAlias.X86_64,
           AbiAlias.MIPS,
-          AbiAlias.MIPS64);
+          AbiAlias.MIPS64,
+          AbiAlias.RISCV64);
+
+  /** The order of preference for textures, in case multiple formats are available. */
+  public static final Ordering<TextureCompressionFormatAlias> TEXTURE_COMPRESSION_FORMAT_ORDERING =
+      Ordering.explicit(
+          TextureCompressionFormatAlias.UNSPECIFIED_TEXTURE_COMPRESSION_FORMAT,
+          TextureCompressionFormatAlias.PALETTED,
+          TextureCompressionFormatAlias.ETC1_RGB8,
+          TextureCompressionFormatAlias.ETC2,
+          TextureCompressionFormatAlias.THREE_DC,
+          TextureCompressionFormatAlias.ATC,
+          TextureCompressionFormatAlias.LATC,
+          TextureCompressionFormatAlias.DXT1,
+          TextureCompressionFormatAlias.S3TC,
+          TextureCompressionFormatAlias.PVRTC,
+          TextureCompressionFormatAlias.ASTC);
 
   private static final Comparator<VariantTargeting> ABI_COMPARATOR =
       comparing(TargetingComparators::getAbi, emptiesFirst(ARCHITECTURE_ORDERING));
@@ -67,6 +85,16 @@ public final class TargetingComparators {
 
   private static final Comparator<VariantTargeting> SCREEN_DENSITY_COMPARATOR =
       comparing(TargetingComparators::getScreenDensity, emptiesFirst(Ordering.natural()));
+
+  private static final Comparator<VariantTargeting> TEXTURE_COMPRESSION_FORMAT_COMPARATOR =
+      comparing(
+          TargetingComparators::getTextureCompressionFormat,
+          emptiesFirst(TEXTURE_COMPRESSION_FORMAT_ORDERING));
+
+  private static final Comparator<VariantTargeting> SDK_RUNTIME_COMPARATOR =
+      comparing(
+          variantTargeting -> variantTargeting.getSdkRuntimeTargeting().getRequiresSdkRuntime(),
+          falseFirst());
 
   /**
    * Comparator for sets of AbiAliases, according to ARCHITECTURE_ORDERING.
@@ -89,9 +117,18 @@ public final class TargetingComparators {
 
   public static final Comparator<VariantTargeting> VARIANT_TARGETING_COMPARATOR =
       SDK_COMPARATOR
+          .thenComparing(SDK_RUNTIME_COMPARATOR)
           .thenComparing(ABI_COMPARATOR)
           .thenComparing(MULTI_ABI_COMPARATOR)
-          .thenComparing(SCREEN_DENSITY_COMPARATOR);
+          .thenComparing(SCREEN_DENSITY_COMPARATOR)
+          .thenComparing(TEXTURE_COMPRESSION_FORMAT_COMPARATOR);
+
+  /** Sort a set of TCFs from most preferable (e.g. PVRTC) to least (e.g. ETC1). */
+  public static ImmutableSortedSet<TextureCompressionFormatAlias> sortTextureCompressionFormat(
+      ImmutableSet<TextureCompressionFormatAlias> textureCompressionFormats) {
+    return ImmutableSortedSet.copyOf(
+        TEXTURE_COMPRESSION_FORMAT_ORDERING.reverse(), textureCompressionFormats);
+  }
 
   private static Optional<Integer> getMinSdk(VariantTargeting variantTargeting) {
     // If the variant does not have an SDK targeting, it is suitable for all SDK values.
@@ -120,6 +157,19 @@ public final class TargetingComparators {
             .getValueList()
             .stream()
             // For now we only support one value in AbiTargeting.
+            .collect(MoreCollectors.onlyElement())
+            .getAlias());
+  }
+
+  private static Optional<TextureCompressionFormatAlias> getTextureCompressionFormat(
+      VariantTargeting variantTargeting) {
+    if (variantTargeting.getTextureCompressionFormatTargeting().getValueList().isEmpty()) {
+      return Optional.empty();
+    }
+
+    return Optional.of(
+        variantTargeting.getTextureCompressionFormatTargeting().getValueList().stream()
+            // For now we only support one value in TextureCompressionFormatTargeting.
             .collect(MoreCollectors.onlyElement())
             .getAlias());
   }

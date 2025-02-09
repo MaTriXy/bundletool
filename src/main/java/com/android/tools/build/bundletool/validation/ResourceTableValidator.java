@@ -16,6 +16,7 @@
 
 package com.android.tools.build.bundletool.validation;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Sets.difference;
 import static com.google.common.collect.Sets.newHashSet;
@@ -25,11 +26,7 @@ import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ResourceId;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.ResouceTableException.ReferencesFileOutsideOfResException;
-import com.android.tools.build.bundletool.model.exceptions.ResouceTableException.ReferencesMissingFilesException;
-import com.android.tools.build.bundletool.model.exceptions.ResouceTableException.ResourceTableMissingException;
-import com.android.tools.build.bundletool.model.exceptions.ResouceTableException.UnreferencedResourcesException;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.utils.ResourcesUtils;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
@@ -64,38 +61,75 @@ public class ResourceTableValidator extends SubValidator {
             .collect(toImmutableSet());
 
     if (!resFiles.isEmpty() && !module.getResourceTable().isPresent()) {
-      throw new ResourceTableMissingException(moduleName);
+      throw InvalidBundleException.builder()
+          .withUserMessage(
+              "Module '%s' contains resource files but is missing a resource table.", moduleName)
+          .build();
     }
 
     ImmutableSet<ZipPath> referencedFiles = ResourcesUtils.getAllFileReferences(resourceTable);
 
     for (ZipPath referencedFile : referencedFiles) {
       if (!referencedFile.startsWith(BundleModule.RESOURCES_DIRECTORY)) {
-        throw new ReferencesFileOutsideOfResException(
-            moduleName, referencedFile, BundleModule.RESOURCES_DIRECTORY);
+        throw InvalidBundleException.builder()
+            .withUserMessage(
+                "Resource table of module '%s' references file '%s' outside of the '%s/'"
+                    + " directory.",
+                moduleName, referencedFile, BundleModule.RESOURCES_DIRECTORY)
+            .build();
       }
     }
 
     ImmutableSet<ZipPath> nonReferencedFiles =
         ImmutableSet.copyOf(difference(resFiles, referencedFiles));
     if (!nonReferencedFiles.isEmpty()) {
-      throw new UnreferencedResourcesException(moduleName, nonReferencedFiles);
+      throw InvalidBundleException.builder()
+          .withUserMessage(
+              "Module '%s' contains resource files that are not referenced from the resource"
+                  + " table: %s",
+              moduleName, nonReferencedFiles)
+          .build();
     }
 
     ImmutableSet<ZipPath> nonExistingFiles =
         ImmutableSet.copyOf(difference(referencedFiles, resFiles));
     if (!nonExistingFiles.isEmpty()) {
-      throw new ReferencesMissingFilesException(moduleName, nonExistingFiles);
+      throw InvalidBundleException.builder()
+          .withUserMessage(
+              "Resource table of module '%s' contains references to non-existing files: %s",
+              moduleName, nonExistingFiles)
+          .build();
     }
   }
 
   @Override
   public void validateAllModules(ImmutableList<BundleModule> modules) {
-    checkResourceIdsAreUnique(modules);
+    if (!BundleValidationUtils.isAssetOnlyBundle(modules)) {
+      checkResourceIds(modules);
+    }
   }
 
   @VisibleForTesting
-  void checkResourceIdsAreUnique(ImmutableList<BundleModule> modules) {
+  void checkResourceIds(ImmutableList<BundleModule> modules) {
+    BundleModule baseModule = BundleValidationUtils.expectBaseModule(modules);
+    if (baseModule.getAndroidManifest().getIsolatedSplits().orElse(false)) {
+      // If splits are isolated, resource IDs cannot be duplicated between modules included in
+      // fusing. It's ok to have inter-module duplication for modules not included in fusing, but we
+      // still need to check for uniqueness within each module.
+      ImmutableList<BundleModule> modulesIncludedInFusing =
+          modules.stream().filter(BundleModule::isIncludedInFusing).collect(toImmutableList());
+      checkResourceIdsAreUnique(modulesIncludedInFusing);
+      for (BundleModule module : modules) {
+        if (!module.isIncludedInFusing()) {
+          checkResourceIdsAreUnique(ImmutableList.of(module));
+        }
+      }
+    } else {
+      checkResourceIdsAreUnique(modules);
+    }
+  }
+
+  private static void checkResourceIdsAreUnique(ImmutableList<BundleModule> modules) {
     HashSet<ResourceId> usedResourceIds = newHashSet();
     for (BundleModule module : modules) {
       ResourceTable resourceTable =
@@ -105,8 +139,8 @@ public class ResourceTableValidator extends SubValidator {
               resourceTableEntry -> {
                 boolean foundDuplicate = !usedResourceIds.add(resourceTableEntry.getResourceId());
                 if (foundDuplicate) {
-                  throw ValidationException.builder()
-                      .withMessage(
+                  throw InvalidBundleException.builder()
+                      .withUserMessage(
                           "Duplicate resource id (%s).",
                           resourceTableEntry.getResourceId().toString())
                       .build();

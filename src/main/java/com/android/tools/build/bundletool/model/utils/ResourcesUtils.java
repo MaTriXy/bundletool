@@ -22,6 +22,7 @@ import static java.util.Comparator.comparing;
 
 import com.android.aapt.Resources.ConfigValue;
 import com.android.aapt.Resources.Entry;
+import com.android.aapt.Resources.FileReference;
 import com.android.aapt.Resources.Package;
 import com.android.aapt.Resources.ResourceTable;
 import com.android.aapt.Resources.Type;
@@ -29,11 +30,15 @@ import com.android.bundle.Targeting.ScreenDensity;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
 import com.android.tools.build.bundletool.model.ResourceTableEntry;
 import com.android.tools.build.bundletool.model.ZipPath;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.function.Function;
@@ -42,6 +47,19 @@ import java.util.stream.Stream;
 
 /** Helpers related to APK resources qualifiers. */
 public final class ResourcesUtils {
+
+  /** Package IDs of system shared libraries and android resources. */
+  private static final ImmutableSet<Integer> ANDROID_PACKAGE_IDS = ImmutableSet.of(0x00, 0x01);
+
+  private static final LoadingCache<String, String> localeToLanguageCache =
+      CacheBuilder.newBuilder()
+          .build(
+              new CacheLoader<String, String>() {
+                @Override
+                public String load(String locale) {
+                  return Locale.forLanguageTag(locale).getLanguage();
+                }
+              });
 
   public static final ImmutableBiMap<String, DensityAlias> SCREEN_DENSITY_TO_PROTO_VALUE_MAP =
       ImmutableBiMap.<String, DensityAlias>builder()
@@ -110,19 +128,19 @@ public final class ResourcesUtils {
       for (int typeIdx = pkg.getTypeCount() - 1; typeIdx >= 0; typeIdx--) {
         Type.Builder type = pkg.getTypeBuilder(typeIdx);
 
-        for (int entryIdx = type.getEntryCount() - 1; entryIdx >= 0; entryIdx--) {
+        List<Entry> unfilteredEntries = type.getEntryList();
+        type.clearEntry();
+
+        for (Entry unfilteredEntry : unfilteredEntries) {
           ResourceTableEntry entry =
               ResourceTableEntry.create(
-                  filteredTable.getPackage(pkgIdx), pkg.getType(typeIdx), type.getEntry(entryIdx));
+                  filteredTable.getPackage(pkgIdx), pkg.getType(typeIdx), unfilteredEntry);
           if (removeEntryPredicate.test(entry)) {
-            type.removeEntry(entryIdx);
             continue;
           }
           Entry filteredEntry = configValuesFilterFn.apply(entry);
           if (filteredEntry.getConfigValueCount() > 0) {
-            type.setEntry(entryIdx, filteredEntry);
-          } else {
-            type.removeEntry(entryIdx);
+            type.addEntry(filteredEntry);
           }
         } // entries
 
@@ -159,9 +177,15 @@ public final class ResourcesUtils {
   }
 
   public static ImmutableSet<ZipPath> getAllFileReferences(ResourceTable resourceTable) {
-    return configValues(resourceTable)
-        .filter(configValue -> configValue.getValue().getItem().hasFile())
-        .map(configValue -> ZipPath.create(configValue.getValue().getItem().getFile().getPath()))
+    return getAllFileReferencesInternal(resourceTable)
+        .map(fileReference -> ZipPath.create(fileReference.getPath()))
+        .collect(toImmutableSet());
+  }
+
+  public static ImmutableSet<ZipPath> getAllProtoXmlFileReferences(ResourceTable resourceTable) {
+    return getAllFileReferencesInternal(resourceTable)
+        .filter(fileReference -> fileReference.getType().equals(FileReference.Type.PROTO_XML))
+        .map(fileReference -> ZipPath.create(fileReference.getPath()))
         .collect(toImmutableSet());
   }
 
@@ -189,7 +213,7 @@ public final class ResourcesUtils {
    * @return a two character language code conforming to ISO-639-1.
    */
   public static String convertLocaleToLanguage(String locale) {
-    return Locale.forLanguageTag(locale).getLanguage();
+    return localeToLanguageCache.getUnchecked(locale);
   }
 
   public static Optional<Entry> lookupEntryByResourceId(
@@ -200,17 +224,61 @@ public final class ResourcesUtils {
         .collect(toOptional());
   }
 
+  public static Optional<Entry> lookupEntryByResourceTypeAndName(
+      ResourceTable resourceTable, String resourceType, String resourceName) {
+    return entries(resourceTable)
+        .filter(
+            entry ->
+                entry.getType().getName().equals(resourceType)
+                    && entry.getEntry().getName().equals(resourceName))
+        .map(ResourceTableEntry::getEntry)
+        .collect(toOptional());
+  }
+
   /** Returns all languages present in given resource table. */
   public static ImmutableSet<String> getAllLanguages(ResourceTable table) {
     return configValues(table)
         .map(configValue -> configValue.getConfig().getLocale())
+        .distinct()
         .map(ResourcesUtils::convertLocaleToLanguage)
+        .collect(toImmutableSet());
+  }
+
+  /** Returns all locales present in a given resource table. */
+  public static ImmutableSet<String> getAllLocales(ResourceTable table) {
+    return configValues(table)
+        .map(configValue -> configValue.getConfig().getLocale())
         .collect(toImmutableSet());
   }
 
   /** Returns the smallest screen density from the ones given. */
   public static DensityAlias getLowestDensity(ImmutableCollection<DensityAlias> densities) {
     return densities.stream().min(comparing(DENSITY_ALIAS_TO_DPI_MAP::get)).get();
+  }
+
+  /**
+   * Returns new resource ID which is obtained from setting package ID part of {@code resourceId} to
+   * {@code newPackageId}.
+   *
+   * <p>First 8 bits of {@code resourceId} represent the package ID.
+   */
+  public static int remapPackageIdInResourceId(int resourceId, int newPackageId) {
+    return (newPackageId << 24) | (resourceId & 0xffffff);
+  }
+
+  /** Returns `true` if the given resource ID belongs to an Android Framework resource. */
+  public static boolean isAndroidResourceId(int resourceId) {
+    return ANDROID_PACKAGE_IDS.contains(getPackageId(resourceId));
+  }
+  /** Extracts package ID from the given {@code resourceId} (first 8 bits). */
+  private static int getPackageId(int resourceId) {
+    return resourceId >> 24;
+  }
+
+  private static Stream<FileReference> getAllFileReferencesInternal(ResourceTable resourceTable) {
+    return configValues(resourceTable)
+        .filter(configValue -> configValue.getValue().getItem().hasFile())
+        .map(configValue -> configValue.getValue().getItem().getFile());
   }
 
   // Not meant to be instantiated.

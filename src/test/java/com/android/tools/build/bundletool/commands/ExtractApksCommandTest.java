@@ -17,9 +17,12 @@
 package com.android.tools.build.bundletool.commands;
 
 import static com.android.bundle.Targeting.Abi.AbiAlias.ARM64_V8A;
+import static com.android.bundle.Targeting.Abi.AbiAlias.RISCV64;
 import static com.android.bundle.Targeting.Abi.AbiAlias.X86;
 import static com.android.bundle.Targeting.Abi.AbiAlias.X86_64;
 import static com.android.bundle.Targeting.ScreenDensity.DensityAlias.XXHDPI;
+import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_L_API_VERSION;
+import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_U_API_VERSION;
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndReadable;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createApkDescription;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createApksArchiveFile;
@@ -27,6 +30,7 @@ import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.crea
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createConditionalApkSet;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createInstantApkSet;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createMasterApkDescription;
+import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createSdkApksArchiveFile;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createSplitApkSet;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createStandaloneApkSet;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createVariant;
@@ -37,51 +41,81 @@ import static com.android.tools.build.bundletool.testing.DeviceFactory.abis;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.createDeviceSpecFile;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.density;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceFeatures;
+import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceGroups;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceWithSdk;
+import static com.android.tools.build.bundletool.testing.DeviceFactory.lDevice;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.lDeviceWithLocales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.locales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.mergeSpecs;
+import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkRuntimeSupported;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkVersion;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeCountrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAbiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkCountrySetTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDensityTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDeviceGroupTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDeviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.countrySetTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceGroupTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeModuleTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleFeatureTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleMinSdkVersionTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.multiAbiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkRuntimeVariantTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersionFrom;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.variantSdkTargeting;
 import static com.android.tools.build.bundletool.testing.TestUtils.expectMissingRequiredFlagException;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.android.bundle.Commands.ApkDescription;
+import com.android.bundle.Commands.ApkSet;
 import com.android.bundle.Commands.AssetModuleMetadata;
 import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.BuildSdkApksResult;
+import com.android.bundle.Commands.DefaultTargetingValue;
 import com.android.bundle.Commands.DeliveryType;
+import com.android.bundle.Commands.ExtractApksResult;
+import com.android.bundle.Commands.ExtractedApk;
+import com.android.bundle.Commands.FeatureModuleType;
+import com.android.bundle.Commands.LocalTestingInfo;
+import com.android.bundle.Commands.LocalTestingInfoForMetadata;
+import com.android.bundle.Commands.ModuleMetadata;
+import com.android.bundle.Commands.PermanentlyFusedModule;
+import com.android.bundle.Commands.Variant;
 import com.android.bundle.Config.Bundletool;
+import com.android.bundle.Config.SplitDimension.Value;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.MultiAbiTargeting;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
+import com.android.bundle.Targeting.SdkRuntimeTargeting;
 import com.android.bundle.Targeting.SdkVersion;
+import com.android.bundle.Targeting.SdkVersionTargeting;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.TestData;
 import com.android.tools.build.bundletool.flags.FlagParser;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.IncompatibleDeviceException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidDeviceSpecException;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.testing.ApksArchiveHelpers.TocFormat;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
-import com.google.common.io.ByteStreams;
+import com.google.common.io.MoreFiles;
+import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.util.JsonFormat;
 import java.io.ByteArrayOutputStream;
-import java.io.FileOutputStream;
 import java.io.PrintStream;
 import java.io.Reader;
 import java.nio.file.Files;
@@ -108,9 +142,11 @@ public class ExtractApksCommandTest {
     tmpDir = tmp.getRoot().toPath();
   }
 
+  @Theory
   @Test
-  public void missingDeviceSpecFlag_throws() throws Exception {
-    Path apksArchiveFile = createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"));
+  public void missingDeviceSpecFlag_throws(TocFormat tocFormat) throws Exception {
+    Path apksArchiveFile =
+        createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"), tocFormat);
 
     expectMissingRequiredFlagException(
         "device-spec",
@@ -145,9 +181,11 @@ public class ExtractApksCommandTest {
     assertThat(exception).hasMessageThat().contains("File 'nonexistent' was not found");
   }
 
+  @Theory
   @Test
-  public void nonExistentDeviceSpecFile_throws() throws Exception {
-    Path apksArchiveFile = createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"));
+  public void nonExistentDeviceSpecFile_throws(TocFormat tocFormat) throws Exception {
+    Path apksArchiveFile =
+        createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"), tocFormat);
 
     Throwable exception =
         assertThrows(
@@ -160,9 +198,11 @@ public class ExtractApksCommandTest {
     assertThat(exception).hasMessageThat().contains("File 'not-found.pb' was not found");
   }
 
+  @Theory
   @Test
-  public void outputDirectoryCreatedIfDoesNotExist() throws Exception {
-    Path apksArchivePath = createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"));
+  public void outputDirectoryCreatedIfDoesNotExist(TocFormat tocFormat) throws Exception {
+    Path apksArchivePath =
+        createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"), tocFormat);
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
     Path outputDirectory = tmpDir.resolve("directory-that-does-not-exist");
@@ -197,8 +237,44 @@ public class ExtractApksCommandTest {
         .contains("Output directory should not be set when APKs are inside directory");
   }
 
+  @Theory
   @Test
-  public void nonExistentModule_throws() throws Exception {
+  public void permanentlyMergedModule(TocFormat tocFormat) throws Exception {
+    ZipPath apkLBase = ZipPath.create("apkL-base.apk");
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    VariantTargeting.getDefaultInstance(),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkLBase))))
+            .addPermanentlyFusedModules(
+                PermanentlyFusedModule.newBuilder().setName("permanent").build())
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+    Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(21), tmpDir.resolve("device.json"));
+    ExtractApksCommand command =
+        ExtractApksCommand.fromFlags(
+            new FlagParser()
+                .parse(
+                    "--device-spec=" + deviceSpecFile,
+                    "--apks=" + apksArchiveFile,
+                    "--modules=permanent"));
+
+    ImmutableList<Path> matchedApks = command.execute();
+    assertThat(matchedApks.stream().map(apk -> apk.getFileName().toString()))
+        .containsExactly("apkL-base.apk");
+  }
+
+  @Theory
+  @Test
+  public void nonExistentModule_throws(TocFormat tocFormat) throws Exception {
     ZipPath apkLBase = ZipPath.create("apkL-base.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
@@ -214,7 +290,7 @@ public class ExtractApksCommandTest {
             .build();
 
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
     Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(21), tmpDir.resolve("device.json"));
     ExtractApksCommand command =
         ExtractApksCommand.fromFlags(
@@ -224,16 +300,18 @@ public class ExtractApksCommandTest {
                     "--apks=" + apksArchiveFile,
                     "--modules=unknown_module"));
 
-    Throwable exception = assertThrows(ValidationException.class, () -> command.execute());
+    Throwable exception = assertThrows(InvalidCommandException.class, command::execute);
 
     assertThat(exception)
         .hasMessageThat()
         .contains("The APK Set archive does not contain the following modules: [unknown_module]");
   }
 
+  @Theory
   @Test
-  public void emptyModules_throws() throws Exception {
-    Path apksArchiveFile = createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"));
+  public void emptyModules_throws(TocFormat tocFormat) throws Exception {
+    Path apksArchiveFile =
+        createApksArchiveFile(minimalApkSet(), tmpDir.resolve("bundle.apks"), tocFormat);
     Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(21), tmpDir.resolve("device.json"));
     ExtractApksCommand command =
         ExtractApksCommand.fromFlags(
@@ -241,13 +319,14 @@ public class ExtractApksCommandTest {
                 .parse(
                     "--device-spec=" + deviceSpecFile, "--apks=" + apksArchiveFile, "--modules="));
 
-    Throwable exception = assertThrows(ValidationException.class, () -> command.execute());
+    Throwable exception = assertThrows(InvalidCommandException.class, command::execute);
 
     assertThat(exception).hasMessageThat().contains("The set of modules cannot be empty.");
   }
 
+  @Theory
   @Test
-  public void deviceSpecFromPbJson() throws Exception {
+  public void deviceSpecFromPbJson(TocFormat tocFormat) throws Exception {
     DeviceSpec.Builder expectedDeviceSpecBuilder = DeviceSpec.newBuilder();
     try (Reader reader = TestData.openReader("testdata/device/pixel2_spec.json")) {
       JsonFormat.parser().merge(reader, expectedDeviceSpecBuilder);
@@ -256,8 +335,8 @@ public class ExtractApksCommandTest {
 
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
-    Path deviceSpecFile = copyToTempDir("testdata/device/pixel2_spec.json");
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+    Path deviceSpecFile = TestData.copyToTempDir(tmp, "testdata/device/pixel2_spec.json");
 
     ExtractApksCommand command =
         ExtractApksCommand.fromFlags(
@@ -266,36 +345,37 @@ public class ExtractApksCommandTest {
     assertThat(command.getDeviceSpec()).isEqualTo(expectedDeviceSpec);
   }
 
+  @Theory
   @Test
-  public void deviceSpecUnknownExtension_throws() throws Exception {
+  public void deviceSpecUnknownExtension_throws(TocFormat tocFormat) throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("bad_filename.dat"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     Throwable exception =
         assertThrows(
-            CommandExecutionException.class,
+            InvalidDeviceSpecException.class,
             () ->
                 ExtractApksCommand.fromFlags(
                     new FlagParser()
                         .parse("--device-spec=" + deviceSpecFile, "--apks=" + apksArchiveFile)));
 
     assertThat(exception).hasMessageThat().contains("Expected .json extension for the device spec");
-    assertThat(exception).hasMessageThat().contains("bad_filename.dat");
   }
 
+  @Theory
   @Test
-  public void deviceSpecViaJavaApi_invalid_throws() throws Exception {
+  public void deviceSpecViaJavaApi_invalid_throws(TocFormat tocFormat) throws Exception {
     DeviceSpec invalidDeviceSpec = deviceWithSdk(-1);
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     Throwable exception =
         assertThrows(
-            ValidationException.class,
+            InvalidDeviceSpecException.class,
             () ->
                 ExtractApksCommand.builder()
                     .setApksArchivePath(apksArchiveFile)
@@ -305,13 +385,15 @@ public class ExtractApksCommandTest {
     assertThat(exception).hasMessageThat().contains("Device spec SDK version");
   }
 
+  @Theory
   @Test
-  public void builderAndFlagsConstruction_inJavaViaProtos_equivalent() throws Exception {
+  public void builderAndFlagsConstruction_inJavaViaProtos_equivalent(TocFormat tocFormat)
+      throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     ExtractApksCommand fromFlags =
         ExtractApksCommand.fromFlags(
@@ -326,12 +408,14 @@ public class ExtractApksCommandTest {
     assertThat(fromFlags).isEqualTo(fromBuilderApi);
   }
 
+  @Theory
   @Test
-  public void builderAndFlagsConstruction_inJavaViaFiles_equivalent() throws Exception {
+  public void builderAndFlagsConstruction_inJavaViaFiles_equivalent(TocFormat tocFormat)
+      throws Exception {
     Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(21), tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     ExtractApksCommand fromFlags =
         ExtractApksCommand.fromFlags(
@@ -346,13 +430,15 @@ public class ExtractApksCommandTest {
     assertThat(fromFlags).isEqualTo(fromBuilderApi);
   }
 
+  @Theory
   @Test
-  public void builderAndFlagsConstruction_optionalModules_equivalent() throws Exception {
+  public void builderAndFlagsConstruction_optionalModules_equivalent(TocFormat tocFormat)
+      throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     ExtractApksCommand fromFlags =
         ExtractApksCommand.fromFlags(
@@ -373,13 +459,15 @@ public class ExtractApksCommandTest {
     assertThat(fromFlags).isEqualTo(fromBuilderApi);
   }
 
+  @Theory
   @Test
-  public void builderAndFlagsConstruction_optionalInstant_equivalent() throws Exception {
+  public void builderAndFlagsConstruction_optionalInstant_equivalent(TocFormat tocFormat)
+      throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     ExtractApksCommand fromFlags =
         ExtractApksCommand.fromFlags(
@@ -400,13 +488,15 @@ public class ExtractApksCommandTest {
     assertThat(fromFlags).isEqualTo(fromBuilderApi);
   }
 
+  @Theory
   @Test
-  public void builderAndFlagsConstruction_optionalInstantFalse_equivalent() throws Exception {
+  public void builderAndFlagsConstruction_optionalInstantFalse_equivalent(TocFormat tocFormat)
+      throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     ExtractApksCommand fromFlags =
         ExtractApksCommand.fromFlags(
@@ -423,12 +513,14 @@ public class ExtractApksCommandTest {
   }
 
   @Test
-  public void builderAndFlagsConstruction_optionalOutputDirectory_equivalent() throws Exception {
+  @Theory
+  public void builderAndFlagsConstruction_optionalOutputDirectory_equivalent(TocFormat tocFormat)
+      throws Exception {
     DeviceSpec deviceSpec = deviceWithSdk(21);
     Path deviceSpecFile = createDeviceSpecFile(deviceSpec, tmpDir.resolve("device.json"));
     BuildApksResult tableOfContentsProto = minimalApkSet();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     ExtractApksCommand fromFlags =
         ExtractApksCommand.fromFlags(
@@ -455,7 +547,8 @@ public class ExtractApksCommandTest {
   @Test
   @Theory
   public void oneModule_Ldevice_matchesLmasterSplit(
-      @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
+      @FromDataPoints("apksInDirectory") boolean apksInDirectory, TocFormat tocFormat)
+      throws Exception {
     ZipPath apkOne = ZipPath.create("apk_one.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
@@ -468,7 +561,7 @@ public class ExtractApksCommandTest {
                     ApkTargeting.getDefaultInstance(),
                     apkOne))
             .build();
-    Path apksPath = createApks(tableOfContentsProto, apksInDirectory);
+    Path apksPath = createApks(tableOfContentsProto, apksInDirectory, tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -492,7 +585,8 @@ public class ExtractApksCommandTest {
   @Test
   @Theory
   public void oneModule_Mdevice_matchesMSplit(
-      @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
+      @FromDataPoints("apksInDirectory") boolean apksInDirectory, TocFormat tocFormat)
+      throws Exception {
     ZipPath apkPreL = ZipPath.create("standalones/apkPreL.apk");
     ZipPath apkL = ZipPath.create("splits/apkL.apk");
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
@@ -523,7 +617,7 @@ public class ExtractApksCommandTest {
                     ApkTargeting.getDefaultInstance(),
                     apkM))
             .build();
-    Path apksPath = createApks(tableOfContentsProto, apksInDirectory);
+    Path apksPath = createApks(tableOfContentsProto, apksInDirectory, tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(23);
 
@@ -547,7 +641,8 @@ public class ExtractApksCommandTest {
   @Test
   @Theory
   public void oneModule_Kdevice_matchesPreLSplit(
-      @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
+      @FromDataPoints("apksInDirectory") boolean apksInDirectory, TocFormat tocFormat)
+      throws Exception {
     ZipPath apkPreL = ZipPath.create("standalones/apkPreL.apk");
     ZipPath apkL = ZipPath.create("splits/apkL.apk");
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
@@ -579,7 +674,7 @@ public class ExtractApksCommandTest {
                     apkM))
             .build();
 
-    Path apksPath = createApks(tableOfContentsProto, apksInDirectory);
+    Path apksPath = createApks(tableOfContentsProto, apksInDirectory, tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(19);
 
@@ -603,7 +698,8 @@ public class ExtractApksCommandTest {
   @Test
   @Theory
   public void oneModule_Ldevice_matchesLSplit(
-      @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
+      @FromDataPoints("apksInDirectory") boolean apksInDirectory, TocFormat tocFormat)
+      throws Exception {
     ZipPath apkPreL = ZipPath.create("standalones/apkPreL.apk");
     ZipPath apkL = ZipPath.create("splits/apkL.apk");
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
@@ -635,7 +731,7 @@ public class ExtractApksCommandTest {
                     apkM))
             .build();
 
-    Path apksPath = createApks(tableOfContentsProto, apksInDirectory);
+    Path apksPath = createApks(tableOfContentsProto, apksInDirectory, tocFormat);
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
     ExtractApksCommand.Builder extractedApksCommand =
@@ -655,8 +751,9 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void apexModule_noMatch() throws Exception {
+  public void apexModule_noMatch(TocFormat tocFormat) throws Exception {
     BuildApksResult buildApksResult =
         BuildApksResult.newBuilder()
             .setBundletool(
@@ -667,12 +764,14 @@ public class ExtractApksCommandTest {
                     multiAbiTargeting(X86_64), ZipPath.create("standalones/standalone-x86_64.apk")))
             .build();
 
-    Path apksPath = createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"));
+    Path apksPath =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
     ExtractApksCommand.Builder extractedApksCommand =
         ExtractApksCommand.builder().setApksArchivePath(apksPath).setDeviceSpec(abis("x86"));
 
     Throwable exception =
-        assertThrows(CommandExecutionException.class, () -> extractedApksCommand.build().execute());
+        assertThrows(
+            IncompatibleDeviceException.class, () -> extractedApksCommand.build().execute());
     assertThat(exception)
         .hasMessageThat()
         .contains(
@@ -683,7 +782,8 @@ public class ExtractApksCommandTest {
   @Test
   @Theory
   public void apexModule_getsBestPossibleApk(
-      @FromDataPoints("apksInDirectory") boolean apksInDirectory) throws Exception {
+      @FromDataPoints("apksInDirectory") boolean apksInDirectory, TocFormat tocFormat)
+      throws Exception {
     ZipPath x64Apk = ZipPath.create("standalones/standalone-x86_64.apk");
     ZipPath x64X86Apk = ZipPath.create("standalones/standalone-x86_64.x86.apk");
     ZipPath x64ArmApk = ZipPath.create("standalones/standalone-x86_64.arm64_v8a.apk");
@@ -711,7 +811,7 @@ public class ExtractApksCommandTest {
             .addVariant(multiAbiTargetingApexVariant(x64ArmTargeting, x64ArmApk))
             .build();
 
-    Path apksPath = createApks(buildApksResult, apksInDirectory);
+    Path apksPath = createApks(buildApksResult, apksInDirectory, tocFormat);
     ExtractApksCommand.Builder extractedApksCommand =
         ExtractApksCommand.builder()
             .setApksArchivePath(apksPath)
@@ -732,8 +832,9 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void oneModule_Kdevice_noMatchingSdkVariant_throws() throws Exception {
+  public void oneModule_Kdevice_noMatchingSdkVariant_throws(TocFormat tocFormat) throws Exception {
     ZipPath apkL = ZipPath.create("splits/apkL.apk");
     ZipPath apkM = ZipPath.create("splits/apkM.apk");
     BuildApksResult tableOfContentsProto =
@@ -753,7 +854,7 @@ public class ExtractApksCommandTest {
                     apkM))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(19);
 
@@ -763,14 +864,15 @@ public class ExtractApksCommandTest {
             .setDeviceSpec(deviceSpec)
             .build();
 
-    Throwable exception = assertThrows(CommandExecutionException.class, () -> command.execute());
+    Throwable exception = assertThrows(IncompatibleDeviceException.class, command::execute);
     assertThat(exception)
         .hasMessageThat()
-        .contains("The app doesn't support SDK version of the device: (19).");
+        .contains("SDK version (19) of the device is not supported.");
   }
 
+  @Theory
   @Test
-  public void oneModule_MipsDevice_noMatchingAbiSplit_throws() throws Exception {
+  public void oneModule_MipsDevice_noMatchingAbiSplit_throws(TocFormat tocFormat) throws Exception {
     ZipPath apkL = ZipPath.create("splits/apkL.apk");
     ZipPath apkLx86 = ZipPath.create("splits/apkL-x86.apk");
     BuildApksResult tableOfContentsProto =
@@ -790,7 +892,7 @@ public class ExtractApksCommandTest {
                             /* isMasterSplit= */ false))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec =
         mergeSpecs(sdkVersion(21), abis("arm64-v8a"), locales("en-US"), density(DensityAlias.HDPI));
@@ -801,7 +903,7 @@ public class ExtractApksCommandTest {
             .setDeviceSpec(deviceSpec)
             .build();
 
-    Throwable exception = assertThrows(CommandExecutionException.class, () -> command.execute());
+    Throwable exception = assertThrows(IncompatibleDeviceException.class, command::execute);
     assertThat(exception)
         .hasMessageThat()
         .contains(
@@ -809,8 +911,9 @@ public class ExtractApksCommandTest {
                 + "app ABIs: [x86]");
   }
 
+  @Theory
   @Test
-  public void oneModule_extractedToTemporaryDirectory() throws Exception {
+  public void oneModule_extractedToTemporaryDirectory(TocFormat tocFormat) throws Exception {
     ZipPath apkOne = ZipPath.create("apk_one.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
@@ -824,7 +927,7 @@ public class ExtractApksCommandTest {
                     apkOne))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -846,8 +949,10 @@ public class ExtractApksCommandTest {
     assertThat(Iterables.getOnlyElement(matchedApks).toString()).startsWith(apkOnePathPrefix);
   }
 
+  @Theory
   @Test
-  public void twoModules_Ldevice_matchesLSplitsForSpecifiedModules() throws Exception {
+  public void twoModules_Ldevice_matchesLSplitsForSpecifiedModules(TocFormat tocFormat)
+      throws Exception {
     ZipPath apkPreL = ZipPath.create("apkPreL.apk");
     ZipPath apkLBase = ZipPath.create("apkL-base.apk");
     ZipPath apkLFeature = ZipPath.create("apkL-feature.apk");
@@ -881,7 +986,7 @@ public class ExtractApksCommandTest {
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkLOther))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -901,8 +1006,9 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void moduleWithDependency_extractDependency() throws Exception {
+  public void moduleWithDependency_extractDependency(TocFormat tocFormat) throws Exception {
     ZipPath apkBase = ZipPath.create("base-master.apk");
     ZipPath apkFeature1 = ZipPath.create("feature1-master.apk");
     ZipPath apkFeature2 = ZipPath.create("feature2-master.apk");
@@ -937,7 +1043,7 @@ public class ExtractApksCommandTest {
                             ApkTargeting.getDefaultInstance(), apkFeature3))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -960,8 +1066,9 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void diamondModuleDependenciesGraph() throws Exception {
+  public void diamondModuleDependenciesGraph(TocFormat tocFormat) throws Exception {
     ZipPath apkBase = ZipPath.create("base-master.apk");
     ZipPath apkFeature1 = ZipPath.create("feature1-master.apk");
     ZipPath apkFeature2 = ZipPath.create("feature2-master.apk");
@@ -1002,7 +1109,7 @@ public class ExtractApksCommandTest {
                             ApkTargeting.getDefaultInstance(), apkFeature4))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -1027,8 +1134,9 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void installTimeModule_alwaysExtracted() throws Exception {
+  public void installTimeModule_alwaysExtracted(TocFormat tocFormat) throws Exception {
     ZipPath apkBase = ZipPath.create("base-master.apk");
     ZipPath apkFeature1 = ZipPath.create("feature1-master.apk");
     ZipPath apkFeature2 = ZipPath.create("feature2-master.apk");
@@ -1057,7 +1165,7 @@ public class ExtractApksCommandTest {
                             ApkTargeting.getDefaultInstance(), apkFeature2))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -1085,9 +1193,10 @@ public class ExtractApksCommandTest {
     ExtractApksCommand.help();
   }
 
+  @Theory
   @Test
-  public void extractInstant_withBaseOnly() throws Exception {
-    Path apkLBase = ZipPath.create("apkL-base.apk");
+  public void extractInstant_withBaseOnly(TocFormat tocFormat) throws Exception {
+    ZipPath apkLBase = ZipPath.create("apkL-base.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
             .setBundletool(
@@ -1100,7 +1209,7 @@ public class ExtractApksCommandTest {
                     createInstantApkSet("base", ApkTargeting.getDefaultInstance(), apkLBase)))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -1119,8 +1228,9 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void extractInstant_withNoInstantModules() throws Exception {
+  public void extractInstant_withNoInstantModules(TocFormat tocFormat) throws Exception {
     ZipPath apkPreL = ZipPath.create("apkPreL.apk");
     ZipPath apkLBase = ZipPath.create("apkL-base.apk");
     ZipPath apkLFeature = ZipPath.create("apkL-feature.apk");
@@ -1150,13 +1260,13 @@ public class ExtractApksCommandTest {
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkLOther))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
-    CommandExecutionException exception =
+    IncompatibleDeviceException exception =
         assertThrows(
-            CommandExecutionException.class,
+            IncompatibleDeviceException.class,
             () ->
                 ExtractApksCommand.builder()
                     .setApksArchivePath(apksArchiveFile)
@@ -1168,8 +1278,9 @@ public class ExtractApksCommandTest {
     assertThat(exception).hasMessageThat().contains("No compatible APKs found for the device");
   }
 
+  @Theory
   @Test
-  public void extractApks_aboveMaxSdk_throws() throws Exception {
+  public void extractApks_aboveMaxSdk_throws(TocFormat tocFormat) throws Exception {
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
             .setBundletool(
@@ -1186,13 +1297,13 @@ public class ExtractApksCommandTest {
                             ApkTargeting.getDefaultInstance(), ZipPath.create("base-master.apk")))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(26);
 
-    CommandExecutionException exception =
+    IncompatibleDeviceException exception =
         assertThrows(
-            CommandExecutionException.class,
+            IncompatibleDeviceException.class,
             () ->
                 ExtractApksCommand.builder()
                     .setApksArchivePath(apksArchiveFile)
@@ -1204,12 +1315,13 @@ public class ExtractApksCommandTest {
     assertThat(exception).hasMessageThat().contains("No compatible APKs found for the device");
   }
 
+  @Theory
   @Test
-  public void extractInstant_withModulesFlag() throws Exception {
-    Path apkPreL = ZipPath.create("apkPreL.apk");
-    Path apkLBase = ZipPath.create("apkL-base.apk");
-    Path apkLFeature = ZipPath.create("apkL-feature.apk");
-    Path apkLOther = ZipPath.create("apkL-other.apk");
+  public void extractInstant_withModulesFlag(TocFormat tocFormat) throws Exception {
+    ZipPath apkPreL = ZipPath.create("apkPreL.apk");
+    ZipPath apkLBase = ZipPath.create("apkL-base.apk");
+    ZipPath apkLFeature = ZipPath.create("apkL-feature.apk");
+    ZipPath apkLOther = ZipPath.create("apkL-other.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
             .setBundletool(
@@ -1229,7 +1341,7 @@ public class ExtractApksCommandTest {
                     createInstantApkSet("other", ApkTargeting.getDefaultInstance(), apkLOther)))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -1250,8 +1362,9 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void extractInstant_withBaseAndSingleInstantModule() throws Exception {
+  public void extractInstant_withBaseAndSingleInstantModule(TocFormat tocFormat) throws Exception {
     ZipPath apkBase = ZipPath.create("apkL-base.apk");
     ZipPath apkInstant = ZipPath.create("apkL-instant.apk");
     ZipPath apkOther = ZipPath.create("apkL-other.apk");
@@ -1275,7 +1388,7 @@ public class ExtractApksCommandTest {
                         createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkOther))))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -1295,11 +1408,12 @@ public class ExtractApksCommandTest {
     }
   }
 
+  @Theory
   @Test
-  public void extractInstant_withMultipleInstantModule() throws Exception {
-    Path apkBase = ZipPath.create("apkL-base.apk");
-    Path apkInstant = ZipPath.create("apkL-instant.apk");
-    Path apkInstant2 = ZipPath.create("apkL-instant2.apk");
+  public void extractInstant_withMultipleInstantModule(TocFormat tocFormat) throws Exception {
+    ZipPath apkBase = ZipPath.create("apkL-base.apk");
+    ZipPath apkInstant = ZipPath.create("apkL-instant.apk");
+    ZipPath apkInstant2 = ZipPath.create("apkL-instant2.apk");
     BuildApksResult tableOfContentsProto =
         BuildApksResult.newBuilder()
             .setBundletool(
@@ -1314,7 +1428,7 @@ public class ExtractApksCommandTest {
                     createInstantApkSet("other", ApkTargeting.getDefaultInstance(), apkInstant2)))
             .build();
     Path apksArchiveFile =
-        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"));
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
 
     DeviceSpec deviceSpec = deviceWithSdk(21);
 
@@ -1354,12 +1468,1546 @@ public class ExtractApksCommandTest {
   }
 
 
-  private Path createApks(BuildApksResult buildApksResult, boolean apksInDirectory)
+  @Theory
+  @Test
+  public void conditionalModule_deviceMatching(TocFormat tocFormat) throws Exception {
+    ZipPath apkBase = ZipPath.create("apkL-base.apk");
+    ZipPath apkConditional = ZipPath.create("apkN-conditional-module.apk");
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(sdkVersionFrom(21), ImmutableSet.of(sdkVersionFrom(1))),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase)),
+                    createConditionalApkSet(
+                        "conditional",
+                        mergeModuleTargeting(
+                            moduleMinSdkVersionTargeting(24),
+                            moduleFeatureTargeting("android.hardware.camera.ar")),
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), apkConditional))))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec =
+        mergeSpecs(deviceWithSdk(24), deviceFeatures("android.hardware.camera.ar"));
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(inOutputDirectory(apkConditional), inOutputDirectory(apkBase));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void conditionalModule_deviceNotMatching(TocFormat tocFormat) throws Exception {
+    ZipPath apkBase = ZipPath.create("apkL-base.apk");
+    ZipPath apkConditional = ZipPath.create("apkN-conditional-module.apk");
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(sdkVersionFrom(21), ImmutableSet.of(sdkVersionFrom(1))),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase)),
+                    createConditionalApkSet(
+                        "conditional",
+                        mergeModuleTargeting(
+                            moduleMinSdkVersionTargeting(24),
+                            moduleFeatureTargeting("android.hardware.camera.ar")),
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), apkConditional))))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = mergeSpecs(deviceWithSdk(21));
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    assertThat(matchedApks).containsExactly(inOutputDirectory(apkBase));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void conditionalModule_deviceNotMatching_moduleInFlags(TocFormat tocFormat)
+      throws Exception {
+    ZipPath apkBase = ZipPath.create("apkL-base.apk");
+    ZipPath apkConditional = ZipPath.create("apkN-conditional-module.apk");
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(sdkVersionFrom(21), ImmutableSet.of(sdkVersionFrom(1))),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase)),
+                    createConditionalApkSet(
+                        "conditional",
+                        mergeModuleTargeting(
+                            moduleMinSdkVersionTargeting(24),
+                            moduleFeatureTargeting("android.hardware.camera.ar")),
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), apkConditional))))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = mergeSpecs(deviceWithSdk(21));
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .setModules(ImmutableSet.of("conditional"))
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(inOutputDirectory(apkConditional), inOutputDirectory(apkBase));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  /** Ensures that --modules=_ALL_ extracts all modules. */
+  @Theory
+  @Test
+  public void shortcutToExtractAllModules(TocFormat tocFormat) throws Exception {
+    ZipPath apkBase = ZipPath.create("base-master.apk");
+    ZipPath apkBaseXxhdpi = ZipPath.create("base-xxhdpi.apk");
+    ZipPath apkFeature = ZipPath.create("feature-master.apk");
+    ZipPath apkFeatureXxhdpi = ZipPath.create("feature-xxhdpi.apk");
+    ZipPath apkFeature2 = ZipPath.create("feature2.apk");
+    ZipPath apkFeature2Arm64 = ZipPath.create("feature2-arm64_v8a.apk");
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase),
+                        createApkDescription(apkDensityTargeting(XXHDPI), apkBaseXxhdpi, false)),
+                    createSplitApkSet(
+                        "feature",
+                        DeliveryType.ON_DEMAND,
+                        /* moduleDependencies= */ ImmutableList.of("feature2"),
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature),
+                        createApkDescription(apkDensityTargeting(XXHDPI), apkFeatureXxhdpi, false)),
+                    createSplitApkSet(
+                        "feature2",
+                        DeliveryType.ON_DEMAND,
+                        /* moduleDependencies= */ ImmutableList.of(),
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature2),
+                        createApkDescription(apkAbiTargeting(ARM64_V8A), apkFeature2Arm64, false))))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = deviceWithSdk(21);
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .setModules(ImmutableSet.of("_ALL_"))
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(apkBase),
+            inOutputDirectory(apkBaseXxhdpi),
+            inOutputDirectory(apkFeature),
+            inOutputDirectory(apkFeatureXxhdpi),
+            inOutputDirectory(apkFeature2),
+            inOutputDirectory(apkFeature2Arm64));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void extractAllModules_appHasNoSdkRuntimeModule_deviceHasSdkRuntime_allModulesReturned(
+      TocFormat tocFormat) throws Exception {
+    ZipPath apkBase = ZipPath.create("base-master.apk");
+    ZipPath apkBaseXxhdpi = ZipPath.create("base-xxhdpi.apk");
+    ZipPath apkFeature = ZipPath.create("feature-master.apk");
+    ZipPath apkFeatureXxhdpi = ZipPath.create("feature-xxhdpi.apk");
+    ZipPath apkFeature2 = ZipPath.create("feature2.apk");
+    ZipPath apkFeature2Arm64 = ZipPath.create("feature2-arm64_v8a.apk");
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase),
+                        createApkDescription(apkDensityTargeting(XXHDPI), apkBaseXxhdpi, false)),
+                    createSplitApkSet(
+                        "feature",
+                        DeliveryType.ON_DEMAND,
+                        /* moduleDependencies= */ ImmutableList.of("feature2"),
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature),
+                        createApkDescription(apkDensityTargeting(XXHDPI), apkFeatureXxhdpi, false)),
+                    createSplitApkSet(
+                        "feature2",
+                        DeliveryType.ON_DEMAND,
+                        /* moduleDependencies= */ ImmutableList.of(),
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature2),
+                        createApkDescription(apkAbiTargeting(ARM64_V8A), apkFeature2Arm64, false))))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec =
+        mergeSpecs(deviceWithSdk(ANDROID_U_API_VERSION), sdkRuntimeSupported(true));
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .setModules(ImmutableSet.of("_ALL_"))
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(apkBase),
+            inOutputDirectory(apkBaseXxhdpi),
+            inOutputDirectory(apkFeature),
+            inOutputDirectory(apkFeatureXxhdpi),
+            inOutputDirectory(apkFeature2),
+            inOutputDirectory(apkFeature2Arm64));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void extractAllModules_appHasSdkRuntimeVariant_sdkRuntimeDevice_sdkSplitsNotMatched(
+      TocFormat tocFormat) throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath sdkSplitApk1 = ZipPath.create("sdk1-master.apk");
+    ZipPath sdkSplitApk2 = ZipPath.create("sdk2-master.apk");
+    ZipPath baseMaster2Apk = ZipPath.create("base-master_2.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    /* variantNumber= */ 1,
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        /* moduleName= */ "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk)),
+                    createSplitApkSet(
+                        /* moduleName= */ "sdk1",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), sdkSplitApk1)),
+                    createSplitApkSet(
+                        /* moduleName= */ "sdk2",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), sdkSplitApk2))))
+            .addVariant(
+                createVariant(
+                    /* variantNumber= */ 2,
+                    sdkRuntimeVariantTargeting(),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMaster2Apk))))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec =
+        mergeSpecs(deviceWithSdk(ANDROID_U_API_VERSION), sdkRuntimeSupported(true));
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .setModules(ImmutableSet.of("_ALL_"))
+            .build()
+            .execute();
+
+    assertThat(matchedApks).containsExactly(inOutputDirectory(baseMaster2Apk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void extractAllModules_appHasSdkRuntimeVariant_nonSdkRuntimeDevice_sdkSplitsMatched(
+      TocFormat tocFormat) throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath sdkSplitApk1 = ZipPath.create("sdk1-master.apk");
+    ZipPath sdkSplitApk2 = ZipPath.create("sdk2-master.apk");
+    ZipPath baseMaster2Apk = ZipPath.create("base-master_2.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    /* variantNumber= */ 1,
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        /* moduleName= */ "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk)),
+                    createSplitApkSet(
+                        /* moduleName= */ "sdk1",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), sdkSplitApk1)),
+                    createSplitApkSet(
+                        /* moduleName= */ "sdk2",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), sdkSplitApk2))))
+            .addVariant(
+                createVariant(
+                    /* variantNumber= */ 2,
+                    sdkRuntimeVariantTargeting(),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMaster2Apk))))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = deviceWithSdk(ANDROID_L_API_VERSION);
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .setModules(ImmutableSet.of("_ALL_"))
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(baseMasterApk),
+            inOutputDirectory(sdkSplitApk1),
+            inOutputDirectory(sdkSplitApk2));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void extractAssetModules(TocFormat tocFormat) throws Exception {
+    String installTimeModule1 = "installtime_assetmodule1";
+    String installTimeModule2 = "installtime_assetmodule2";
+    String onDemandModule = "ondemand_assetmodule";
+    ZipPath installTimeMasterApk1 = ZipPath.create(installTimeModule1 + "-master.apk");
+    ZipPath installTimeEnApk1 = ZipPath.create(installTimeModule1 + "-en.apk");
+    ZipPath installTimeMasterApk2 = ZipPath.create(installTimeModule2 + "-master.apk");
+    ZipPath installTimeEnApk2 = ZipPath.create(installTimeModule2 + "-en.apk");
+    ZipPath onDemandMasterApk = ZipPath.create(onDemandModule + "-master.apk");
+    ZipPath baseApk = ZipPath.create("base-master.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), baseApk))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(installTimeModule1)
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        splitApkDescription(
+                            ApkTargeting.getDefaultInstance(), installTimeMasterApk1))
+                    .addApkDescription(
+                        splitApkDescription(apkLanguageTargeting("en"), installTimeEnApk1)))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(installTimeModule2)
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        splitApkDescription(
+                            ApkTargeting.getDefaultInstance(), installTimeMasterApk2))
+                    .addApkDescription(
+                        splitApkDescription(apkLanguageTargeting("en"), installTimeEnApk2)))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(onDemandModule)
+                            .setDeliveryType(DeliveryType.ON_DEMAND))
+                    .addApkDescription(
+                        splitApkDescription(ApkTargeting.getDefaultInstance(), onDemandMasterApk)))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = lDeviceWithLocales("en-US");
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(installTimeMasterApk1),
+            inOutputDirectory(installTimeEnApk1),
+            inOutputDirectory(installTimeMasterApk2),
+            inOutputDirectory(installTimeEnApk2),
+            inOutputDirectory(baseApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void extractAssetModules_allModules(TocFormat tocFormat) throws Exception {
+    String installTimeModule1 = "installtime_assetmodule1";
+    String installTimeModule2 = "installtime_assetmodule2";
+    String onDemandModule = "ondemand_assetmodule";
+    ZipPath installTimeMasterApk1 = ZipPath.create(installTimeModule1 + "-master.apk");
+    ZipPath installTimeEnApk1 = ZipPath.create(installTimeModule1 + "-en.apk");
+    ZipPath installTimeMasterApk2 = ZipPath.create(installTimeModule2 + "-master.apk");
+    ZipPath installTimeEnApk2 = ZipPath.create(installTimeModule2 + "-en.apk");
+    ZipPath onDemandMasterApk = ZipPath.create(onDemandModule + "-master.apk");
+    ZipPath baseApk = ZipPath.create("base-master.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), baseApk))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(installTimeModule1)
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        splitApkDescription(
+                            ApkTargeting.getDefaultInstance(), installTimeMasterApk1))
+                    .addApkDescription(
+                        splitApkDescription(apkLanguageTargeting("en"), installTimeEnApk1)))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(installTimeModule2)
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        splitApkDescription(
+                            ApkTargeting.getDefaultInstance(), installTimeMasterApk2))
+                    .addApkDescription(
+                        splitApkDescription(apkLanguageTargeting("en"), installTimeEnApk2)))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(onDemandModule)
+                            .setDeliveryType(DeliveryType.ON_DEMAND))
+                    .addApkDescription(
+                        splitApkDescription(ApkTargeting.getDefaultInstance(), onDemandMasterApk)))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = lDeviceWithLocales("en-US");
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .setModules(ImmutableSet.of("_ALL_"))
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(installTimeMasterApk1),
+            inOutputDirectory(installTimeEnApk1),
+            inOutputDirectory(installTimeMasterApk2),
+            inOutputDirectory(installTimeEnApk2),
+            inOutputDirectory(onDemandMasterApk),
+            inOutputDirectory(baseApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void extractAssetModules_deviceGroup(TocFormat tocFormat) throws Exception {
+    String installTimeModule = "installtime_assetmodule";
+    ZipPath installTimeMasterApk = ZipPath.create(installTimeModule + "-master.apk");
+    ZipPath installTimeHighApk = ZipPath.create(installTimeModule + "-group_high.apk");
+    ZipPath installTimeLowApk = ZipPath.create(installTimeModule + "-group_low.apk");
+    ZipPath baseApk = ZipPath.create("base-master.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), baseApk))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(installTimeModule)
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        splitApkDescription(
+                            ApkTargeting.getDefaultInstance(), installTimeMasterApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkDeviceGroupTargeting(
+                                deviceGroupTargeting("high", ImmutableList.of("low"))),
+                            installTimeHighApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkDeviceGroupTargeting(
+                                deviceGroupTargeting("low", ImmutableList.of("high"))),
+                            installTimeLowApk)))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = mergeSpecs(lDevice(), deviceGroups("high"));
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(installTimeMasterApk),
+            inOutputDirectory(installTimeHighApk),
+            inOutputDirectory(baseApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void bundleWithDeviceTierTargeting_noDeviceTierSpecified_usesDefaults(TocFormat tocFormat)
+      throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath baseLowApk = ZipPath.create("base-tier_0.apk");
+    ZipPath baseHighApk = ZipPath.create("base-tier_1.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk),
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 0, /* alternatives= */ ImmutableList.of(1))),
+                            baseLowApk),
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 1, /* alternatives= */ ImmutableList.of(0))),
+                            baseHighApk))))
+            .addDefaultTargetingValue(
+                DefaultTargetingValue.newBuilder()
+                    .setDimension(Value.DEVICE_TIER)
+                    .setDefaultValue("1"))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = lDevice();
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    // Master and high tier splits for base and asset module.
+    assertThat(matchedApks)
+        .containsExactly(inOutputDirectory(baseMasterApk), inOutputDirectory(baseHighApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void bundleWithDeviceTierTargeting_noDeviceTierSpecifiedNorDefault_usesZeroAsDefault(
+      TocFormat tocFormat) throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath baseLowApk = ZipPath.create("base-tier_0.apk");
+    ZipPath baseHighApk = ZipPath.create("base-tier_1.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk),
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 0, /* alternatives= */ ImmutableList.of(1))),
+                            baseLowApk),
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 1, /* alternatives= */ ImmutableList.of(0))),
+                            baseHighApk))))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = lDevice();
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    // Master and high tier splits for base and asset module.
+    assertThat(matchedApks)
+        .containsExactly(inOutputDirectory(baseMasterApk), inOutputDirectory(baseLowApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void bundleWithDeviceTierTargeting_deviceTierSet_filtersByTier(TocFormat tocFormat)
+      throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath baseLowApk = ZipPath.create("base-tier_0.apk");
+    ZipPath baseHighApk = ZipPath.create("base-tier_1.apk");
+    ZipPath asset1MasterApk = ZipPath.create("asset1-master.apk");
+    ZipPath asset1LowApk = ZipPath.create("asset1-tier_0.apk");
+    ZipPath asset1HighApk = ZipPath.create("asset1-tier_1.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk),
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 0, /* alternatives= */ ImmutableList.of(1))),
+                            baseLowApk),
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 1, /* alternatives= */ ImmutableList.of(0))),
+                            baseHighApk))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName("asset1")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), asset1MasterApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 0, /* alternatives= */ ImmutableList.of(1))),
+                            asset1LowApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkDeviceTierTargeting(
+                                deviceTierTargeting(
+                                    /* value= */ 1, /* alternatives= */ ImmutableList.of(0))),
+                            asset1HighApk)))
+            .addDefaultTargetingValue(
+                DefaultTargetingValue.newBuilder()
+                    .setDimension(Value.DEVICE_TIER)
+                    .setDefaultValue("0"))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = lDevice().toBuilder().setDeviceTier(Int32Value.of(1)).build();
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    // Master and high tier splits for base and asset module.
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(baseMasterApk),
+            inOutputDirectory(baseHighApk),
+            inOutputDirectory(asset1MasterApk),
+            inOutputDirectory(asset1HighApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void bundleWithDeviceGroupTargeting_deviceGroupSet_filtersByDeviceGroup(
+      TocFormat tocFormat) throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath baseLowApk = ZipPath.create("base-group_low.apk");
+    ZipPath baseHighApk = ZipPath.create("base-group_high.apk");
+    ZipPath asset1MasterApk = ZipPath.create("asset1-master.apk");
+    ZipPath asset1LowApk = ZipPath.create("asset1-group_low.apk");
+    ZipPath asset1HighApk = ZipPath.create("asset1-group_high.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk),
+                        splitApkDescription(
+                            apkDeviceGroupTargeting(
+                                deviceGroupTargeting(
+                                    /* value= */ "low",
+                                    /* alternatives= */ ImmutableList.of("high"))),
+                            baseLowApk),
+                        splitApkDescription(
+                            apkDeviceGroupTargeting(
+                                deviceGroupTargeting(
+                                    /* value= */ "high",
+                                    /* alternatives= */ ImmutableList.of("low"))),
+                            baseHighApk))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName("asset1")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), asset1MasterApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkDeviceGroupTargeting(
+                                deviceGroupTargeting(
+                                    /* value= */ "low",
+                                    /* alternatives= */ ImmutableList.of("high"))),
+                            asset1LowApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkDeviceGroupTargeting(
+                                deviceGroupTargeting(
+                                    /* value= */ "high",
+                                    /* alternatives= */ ImmutableList.of("low"))),
+                            asset1HighApk)))
+            .addDefaultTargetingValue(
+                DefaultTargetingValue.newBuilder()
+                    .setDimension(Value.DEVICE_GROUP)
+                    .setDefaultValue("low"))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = lDevice().toBuilder().addDeviceGroups("high").build();
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    // Master and "high" group splits for base and asset module.
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(baseMasterApk),
+            inOutputDirectory(baseHighApk),
+            inOutputDirectory(asset1MasterApk),
+            inOutputDirectory(asset1HighApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void bundleWithCountrySetTargeting_noCountrySetSpecifiedNorDefault_usesFallback(
+      TocFormat tocFormat) throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath baseRestOfWorldApk = ZipPath.create("base-other_countries.apk");
+    ZipPath baseSeaApk = ZipPath.create("base-countries_sea.apk");
+    ZipPath baseLatamApk = ZipPath.create("base-countries_latam.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "sea",
+                                    /* alternatives= */ ImmutableList.of("latam"))),
+                            baseSeaApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "latam",
+                                    /* alternatives= */ ImmutableList.of("sea"))),
+                            baseLatamApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                alternativeCountrySetTargeting(ImmutableList.of("sea", "latam"))),
+                            baseRestOfWorldApk))))
+            .addDefaultTargetingValue(
+                DefaultTargetingValue.newBuilder().setDimension(Value.COUNTRY_SET))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+    DeviceSpec deviceSpec = lDevice();
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(inOutputDirectory(baseMasterApk), inOutputDirectory(baseRestOfWorldApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void bundleWithCountrySetTargeting_noCountrySetSpecified_usesDefaults(TocFormat tocFormat)
+      throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath baseRestOfWorldApk = ZipPath.create("base-other_countries.apk");
+    ZipPath baseSeaApk = ZipPath.create("base-countries_sea.apk");
+    ZipPath baseLatamApk = ZipPath.create("base-countries_latam.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "sea",
+                                    /* alternatives= */ ImmutableList.of("latam"))),
+                            baseSeaApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "latam",
+                                    /* alternatives= */ ImmutableList.of("sea"))),
+                            baseLatamApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                alternativeCountrySetTargeting(ImmutableList.of("sea", "latam"))),
+                            baseRestOfWorldApk))))
+            .addDefaultTargetingValue(
+                DefaultTargetingValue.newBuilder()
+                    .setDimension(Value.COUNTRY_SET)
+                    .setDefaultValue("latam"))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+    DeviceSpec deviceSpec = lDevice();
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(inOutputDirectory(baseMasterApk), inOutputDirectory(baseLatamApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void bundleWithCountrySetTargeting_countrySetSpecified_filterByCountrySet(
+      TocFormat tocFormat) throws Exception {
+    ZipPath baseMasterApk = ZipPath.create("base-master.apk");
+    ZipPath baseRestOfWorldApk = ZipPath.create("base-other_countries.apk");
+    ZipPath baseSeaApk = ZipPath.create("base-countries_sea.apk");
+    ZipPath baseLatamApk = ZipPath.create("base-countries_latam.apk");
+    ZipPath asset1MasterApk = ZipPath.create("asset1-master.apk");
+    ZipPath asset1RestOfWorldApk = ZipPath.create("asset1-other_countries.apk");
+    ZipPath asset1SeaApk = ZipPath.create("asset1-countries_sea.apk");
+    ZipPath asset1LatamApk = ZipPath.create("asset1-countries_latam.apk");
+    BuildApksResult buildApksResult =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), baseMasterApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "sea",
+                                    /* alternatives= */ ImmutableList.of("latam"))),
+                            baseSeaApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "latam",
+                                    /* alternatives= */ ImmutableList.of("sea"))),
+                            baseLatamApk),
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                alternativeCountrySetTargeting(ImmutableList.of("sea", "latam"))),
+                            baseRestOfWorldApk))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName("asset1")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME))
+                    .addApkDescription(
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), asset1MasterApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "latam",
+                                    /* alternatives= */ ImmutableList.of("sea"))),
+                            asset1LatamApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                countrySetTargeting(
+                                    /* value= */ "sea",
+                                    /* alternatives= */ ImmutableList.of("latam"))),
+                            asset1SeaApk))
+                    .addApkDescription(
+                        splitApkDescription(
+                            apkCountrySetTargeting(
+                                alternativeCountrySetTargeting(ImmutableList.of("latam", "sea"))),
+                            asset1RestOfWorldApk)))
+            .addDefaultTargetingValue(
+                DefaultTargetingValue.newBuilder().setDimension(Value.COUNTRY_SET))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
+    DeviceSpec deviceSpec = lDevice().toBuilder().setCountrySet(StringValue.of("latam")).build();
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(baseMasterApk),
+            inOutputDirectory(baseLatamApk),
+            inOutputDirectory(asset1MasterApk),
+            inOutputDirectory(asset1LatamApk));
+    for (Path matchedApk : matchedApks) {
+      checkFileExistsAndReadable(tmpDir.resolve(matchedApk));
+    }
+  }
+
+  @Theory
+  @Test
+  public void incompleteApksFile_missingMatchedAbiSplit_throws(TocFormat tocFormat)
+      throws Exception {
+    // Partial APK Set file where 'x86' split is included and 'x86_64' split is not included because
+    // device spec sent to 'build-apks' command doesn't support it.
+    // Next, device spec that should be matched to 'x86_64' split is provided to 'extract-apks'
+    // command and command throws IncompatibleDeviceException.
+    BuildApksResult tableOfContent =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    VariantTargeting.getDefaultInstance(),
+                    createSplitApkSet(
+                        /* moduleName= */ "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), ZipPath.create("base-master.apk")),
+                        splitApkDescription(
+                            apkAbiTargeting(X86, ImmutableSet.of(X86_64)),
+                            ZipPath.create("base-x86.apk")))))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContent, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = mergeSpecs(deviceWithSdk(21), abis("x86_64", "x86"));
+
+    ExtractApksCommand command =
+        ExtractApksCommand.builder()
+            .setDeviceSpec(deviceSpec)
+            .setApksArchivePath(apksArchiveFile)
+            .setOutputDirectory(tmpDir)
+            .build();
+    IncompatibleDeviceException exception =
+        assertThrows(IncompatibleDeviceException.class, command::execute);
+    assertThat(exception)
+        .hasMessageThat()
+        .isEqualTo(
+            "Missing APKs for [ABI] dimensions in the module 'base' for the provided device.");
+  }
+
+  @Theory
+  @Test
+  public void multipleAbiSplits_riscV64(TocFormat tocFormat) throws Exception {
+    BuildApksResult tableOfContent =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    VariantTargeting.getDefaultInstance(),
+                    createSplitApkSet(
+                        /* moduleName= */ "base",
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), ZipPath.create("base-master.apk")),
+                        splitApkDescription(
+                            apkAbiTargeting(RISCV64, ImmutableSet.of(X86_64, X86)),
+                            ZipPath.create("base-riscv64.apk")),
+                        splitApkDescription(
+                            apkAbiTargeting(X86, ImmutableSet.of(X86_64, RISCV64)),
+                            ZipPath.create("base-x86.apk")),
+                        splitApkDescription(
+                            apkAbiTargeting(X86_64, ImmutableSet.of(X86, RISCV64)),
+                            ZipPath.create("base-x86_64.apk")))))
+            .build();
+
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContent, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = mergeSpecs(deviceWithSdk(21), abis("riscv64"));
+
+    ImmutableList<Path> matchedApks =
+        ExtractApksCommand.builder()
+            .setDeviceSpec(deviceSpec)
+            .setApksArchivePath(apksArchiveFile)
+            .setOutputDirectory(tmpDir)
+            .build()
+            .execute();
+    assertThat(matchedApks)
+        .containsExactly(
+            inOutputDirectory(ZipPath.create("base-master.apk")),
+            inOutputDirectory(ZipPath.create("base-riscv64.apk")));
+  }
+
+  @DataPoints("localTestingEnabled")
+  public static final ImmutableSet<Boolean> LOCAL_TESTING_ENABLED = ImmutableSet.of(true, false);
+
+  @Test
+  @Theory
+  public void extractApks_producesOutputMetadata(
+      @FromDataPoints("localTestingEnabled") boolean localTestingEnabled, TocFormat tocFormat)
+      throws Exception {
+    String onDemandModule = "ondemand_assetmodule";
+    ZipPath apkBase = ZipPath.create("base-master.apk");
+    ZipPath apkFeature1 = ZipPath.create("feature1-master.apk");
+    ZipPath apkFeature2 = ZipPath.create("feature2-master.apk");
+    ZipPath onDemandMasterApk = ZipPath.create(onDemandModule + "-master.apk");
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .setBundletool(
+                Bundletool.newBuilder()
+                    .setVersion(BundleToolVersion.getCurrentVersion().toString()))
+            .addVariant(
+                createVariant(
+                    variantSdkTargeting(
+                        sdkVersionFrom(21), ImmutableSet.of(SdkVersion.getDefaultInstance())),
+                    createSplitApkSet(
+                        /* moduleName= */ "base",
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkBase)),
+                    createSplitApkSet(
+                        /* moduleName= */ "feature1",
+                        DeliveryType.ON_DEMAND,
+                        /* moduleDependencies= */ ImmutableList.of(),
+                        createMasterApkDescription(ApkTargeting.getDefaultInstance(), apkFeature1)),
+                    createSplitApkSet(
+                        /* moduleName= */ "feature2",
+                        DeliveryType.ON_DEMAND,
+                        /* moduleDependencies= */ ImmutableList.of("feature1"),
+                        createMasterApkDescription(
+                            ApkTargeting.getDefaultInstance(), apkFeature2))))
+            .addAssetSliceSet(
+                AssetSliceSet.newBuilder()
+                    .setAssetModuleMetadata(
+                        AssetModuleMetadata.newBuilder()
+                            .setName(onDemandModule)
+                            .setDeliveryType(DeliveryType.ON_DEMAND))
+                    .addApkDescription(
+                        splitApkDescription(ApkTargeting.getDefaultInstance(), onDemandMasterApk)))
+            .build();
+
+    if (localTestingEnabled) {
+      tableOfContentsProto =
+          tableOfContentsProto.toBuilder()
+              .setPackageName("com.acme.anvil")
+              .setLocalTestingInfo(
+                  LocalTestingInfo.newBuilder()
+                      .setEnabled(true)
+                      .setLocalTestingPath("local_testing_dir"))
+              .build();
+    }
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("bundle.apks"), tocFormat);
+
+    DeviceSpec deviceSpec = deviceWithSdk(21);
+
+    ImmutableList<Path> apks =
+        ExtractApksCommand.builder()
+            .setApksArchivePath(apksArchiveFile)
+            .setDeviceSpec(deviceSpec)
+            .setOutputDirectory(tmpDir)
+            .setModules(ImmutableSet.of("feature2", "ondemand_assetmodule"))
+            .setIncludeMetadata(true)
+            .build()
+            .execute();
+
+    assertThat(apks)
+        .containsExactly(
+            inOutputDirectory(apkBase),
+            inOutputDirectory(apkFeature1),
+            inOutputDirectory(apkFeature2),
+            inOutputDirectory(onDemandMasterApk));
+
+    Path metadataFile = inTempDirectory("metadata.json");
+    assertThat(Files.isRegularFile(metadataFile)).isTrue();
+    ExtractApksResult expectedResult =
+        ExtractApksResult.newBuilder()
+            .addApks(
+                ExtractedApk.newBuilder()
+                    .setPath(apkBase.toString())
+                    .setDeliveryType(DeliveryType.INSTALL_TIME)
+                    .setModuleName("base")
+                    .build())
+            .addApks(
+                ExtractedApk.newBuilder()
+                    .setPath(apkFeature1.toString())
+                    .setDeliveryType(DeliveryType.ON_DEMAND)
+                    .setModuleName("feature1")
+                    .build())
+            .addApks(
+                ExtractedApk.newBuilder()
+                    .setPath(apkFeature2.toString())
+                    .setDeliveryType(DeliveryType.ON_DEMAND)
+                    .setModuleName("feature2")
+                    .build())
+            .addApks(
+                ExtractedApk.newBuilder()
+                    .setPath(onDemandMasterApk.toString())
+                    .setDeliveryType(DeliveryType.ON_DEMAND)
+                    .setModuleName("ondemand_assetmodule")
+                    .build())
+            .build();
+    if (localTestingEnabled) {
+      expectedResult =
+          expectedResult.toBuilder()
+              .setLocalTestingInfo(
+                  LocalTestingInfoForMetadata.newBuilder()
+                      .setLocalTestingDir(
+                          "/sdcard/Android/data/com.acme.anvil/files/local_testing_dir"))
+              .build();
+    }
+    assertThat(parseExtractApksResult(metadataFile))
+        .ignoringRepeatedFieldOrder()
+        .isEqualTo(expectedResult);
+  }
+
+  @Theory
+  @Test
+  public void extractApks_appWithRuntimeSdkVariant_noSdkRuntimeInSpec(TocFormat tocFormat)
+      throws Exception {
+    String withSdkRuntimeApk = "with_sdk_runtime.apk";
+    String withoutSdkRuntimeApk = "without_sdk_runtime.apk";
+    Variant variantWithSdkRuntime =
+        Variant.newBuilder()
+            .addApkSet(
+                ApkSet.newBuilder()
+                    .setModuleMetadata(
+                        ModuleMetadata.newBuilder()
+                            .setName("base")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME)
+                            .setModuleType(FeatureModuleType.FEATURE_MODULE))
+                    .addApkDescription(
+                        ApkDescription.newBuilder().setPath("standalones/" + withSdkRuntimeApk)))
+            .setTargeting(
+                VariantTargeting.newBuilder()
+                    .setSdkVersionTargeting(
+                        SdkVersionTargeting.newBuilder()
+                            .addValue(SdkVersion.newBuilder().setMin(Int32Value.of(33))))
+                    .setSdkRuntimeTargeting(
+                        SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(true)))
+            .build();
+    Variant variantWithoutSdkRuntime =
+        Variant.newBuilder()
+            .addApkSet(
+                ApkSet.newBuilder()
+                    .setModuleMetadata(
+                        ModuleMetadata.newBuilder()
+                            .setName("base")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME)
+                            .setModuleType(FeatureModuleType.FEATURE_MODULE))
+                    .addApkDescription(
+                        ApkDescription.newBuilder().setPath("standalones/" + withoutSdkRuntimeApk)))
+            .setTargeting(
+                VariantTargeting.newBuilder()
+                    .setSdkVersionTargeting(
+                        SdkVersionTargeting.newBuilder()
+                            .addValue(SdkVersion.newBuilder().setMin(Int32Value.of(33))))
+                    .setSdkRuntimeTargeting(
+                        SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(false)))
+            .build();
+
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .addVariant(variantWithSdkRuntime)
+            .addVariant(variantWithoutSdkRuntime)
+            .setBundletool(Bundletool.newBuilder().setVersion("1.10.1"))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("app.apks"), tocFormat);
+    Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(34), tmpDir.resolve("device.json"));
+    ExtractApksCommand command =
+        ExtractApksCommand.fromFlags(
+            new FlagParser().parse("--device-spec=" + deviceSpecFile, "--apks=" + apksArchiveFile));
+
+    ImmutableList<Path> matchedApks = command.execute();
+
+    assertThat(matchedApks.stream().map(apk -> apk.getFileName().toString()))
+        .containsExactly(withSdkRuntimeApk);
+  }
+
+  @Theory
+  @Test
+  public void extractApks_appWithRuntimeSdkVariant_withSdkRuntimeInSpec(TocFormat tocFormat)
+      throws Exception {
+    String withSdkRuntimeApk = "with_sdk_runtime.apk";
+    String withoutSdkRuntimeApk = "without_sdk_runtime.apk";
+    Variant variantWithSdkRuntime =
+        Variant.newBuilder()
+            .addApkSet(
+                ApkSet.newBuilder()
+                    .setModuleMetadata(
+                        ModuleMetadata.newBuilder()
+                            .setName("base")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME)
+                            .setModuleType(FeatureModuleType.FEATURE_MODULE))
+                    .addApkDescription(
+                        ApkDescription.newBuilder().setPath("standalones/" + withSdkRuntimeApk)))
+            .setTargeting(
+                VariantTargeting.newBuilder()
+                    .setSdkVersionTargeting(
+                        SdkVersionTargeting.newBuilder()
+                            .addValue(SdkVersion.newBuilder().setMin(Int32Value.of(33))))
+                    .setSdkRuntimeTargeting(
+                        SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(true)))
+            .build();
+    Variant variantWithoutSdkRuntime =
+        Variant.newBuilder()
+            .addApkSet(
+                ApkSet.newBuilder()
+                    .setModuleMetadata(
+                        ModuleMetadata.newBuilder()
+                            .setName("base")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME)
+                            .setModuleType(FeatureModuleType.FEATURE_MODULE))
+                    .addApkDescription(
+                        ApkDescription.newBuilder().setPath("standalones/" + withoutSdkRuntimeApk)))
+            .setTargeting(
+                VariantTargeting.newBuilder()
+                    .setSdkVersionTargeting(
+                        SdkVersionTargeting.newBuilder()
+                            .addValue(SdkVersion.newBuilder().setMin(Int32Value.of(33))))
+                    .setSdkRuntimeTargeting(
+                        SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(false)))
+            .build();
+
+    BuildApksResult tableOfContentsProto =
+        BuildApksResult.newBuilder()
+            .addVariant(variantWithSdkRuntime)
+            .addVariant(variantWithoutSdkRuntime)
+            .setBundletool(Bundletool.newBuilder().setVersion("1.10.1"))
+            .build();
+    Path apksArchiveFile =
+        createApksArchiveFile(tableOfContentsProto, tmpDir.resolve("app.apks"), tocFormat);
+    Path deviceSpecFile =
+        createDeviceSpecFile(
+            mergeSpecs(deviceWithSdk(34), sdkRuntimeSupported(false)),
+            tmpDir.resolve("device.json"));
+    ExtractApksCommand command =
+        ExtractApksCommand.fromFlags(
+            new FlagParser().parse("--device-spec=" + deviceSpecFile, "--apks=" + apksArchiveFile));
+
+    ImmutableList<Path> matchedApks = command.execute();
+
+    assertThat(matchedApks.stream().map(apk -> apk.getFileName().toString()))
+        .containsExactly(withoutSdkRuntimeApk);
+  }
+
+  @Test
+  public void extractApks_sdkApkSetMatching() throws Exception {
+    String standaloneApk = "standalone.apk";
+    Variant variant =
+        Variant.newBuilder()
+            .addApkSet(
+                ApkSet.newBuilder()
+                    .setModuleMetadata(
+                        ModuleMetadata.newBuilder()
+                            .setName("base")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME)
+                            .setModuleType(FeatureModuleType.FEATURE_MODULE))
+                    .addApkDescription(
+                        ApkDescription.newBuilder().setPath("standalones/" + standaloneApk)))
+            .setTargeting(
+                VariantTargeting.newBuilder()
+                    .setSdkVersionTargeting(
+                        SdkVersionTargeting.newBuilder()
+                            .addValue(SdkVersion.newBuilder().setMin(Int32Value.of(33)))))
+            .build();
+    BuildSdkApksResult tableOfContentsProto =
+        BuildSdkApksResult.newBuilder()
+            .addVariant(variant)
+            .setBundletool(Bundletool.newBuilder().setVersion("1.10.1"))
+            .build();
+    Path apksArchiveFile =
+        createSdkApksArchiveFile(tableOfContentsProto, tmpDir.resolve("sdk.apks"));
+    Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(34), tmpDir.resolve("device.json"));
+    ExtractApksCommand command =
+        ExtractApksCommand.fromFlags(
+            new FlagParser().parse("--device-spec=" + deviceSpecFile, "--apks=" + apksArchiveFile));
+
+    ImmutableList<Path> matchedApks = command.execute();
+
+    assertThat(matchedApks.stream().map(apk -> apk.getFileName().toString()))
+        .containsExactly(standaloneApk);
+  }
+
+  @Test
+  public void extractApks_sdkApkSetNotMatching_throws() throws Exception {
+    Variant variant =
+        Variant.newBuilder()
+            .addApkSet(
+                ApkSet.newBuilder()
+                    .setModuleMetadata(
+                        ModuleMetadata.newBuilder()
+                            .setName("base")
+                            .setDeliveryType(DeliveryType.INSTALL_TIME)
+                            .setModuleType(FeatureModuleType.FEATURE_MODULE))
+                    .addApkDescription(
+                        ApkDescription.newBuilder().setPath("standalones/standalone.apk")))
+            .setTargeting(
+                VariantTargeting.newBuilder()
+                    .setSdkVersionTargeting(
+                        SdkVersionTargeting.newBuilder()
+                            .addValue(SdkVersion.newBuilder().setMin(Int32Value.of(33)))))
+            .build();
+    BuildSdkApksResult tableOfContentsProto =
+        BuildSdkApksResult.newBuilder()
+            .addVariant(variant)
+            .setBundletool(Bundletool.newBuilder().setVersion("1.10.1"))
+            .build();
+    Path apksArchiveFile =
+        createSdkApksArchiveFile(tableOfContentsProto, tmpDir.resolve("sdk.apks"));
+    Path deviceSpecFile = createDeviceSpecFile(deviceWithSdk(21), tmpDir.resolve("device.json"));
+    ExtractApksCommand command =
+        ExtractApksCommand.fromFlags(
+            new FlagParser().parse("--device-spec=" + deviceSpecFile, "--apks=" + apksArchiveFile));
+
+    Throwable exception = assertThrows(IncompatibleDeviceException.class, command::execute);
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("SDK version (21) of the device is not supported.");
+  }
+
+  private static ExtractApksResult parseExtractApksResult(Path file) throws Exception {
+    ExtractApksResult.Builder builder = ExtractApksResult.newBuilder();
+    JsonFormat.parser().merge(MoreFiles.asCharSource(file, UTF_8).read(), builder);
+    return builder.build();
+  }
+
+  private Path createApks(
+      BuildApksResult buildApksResult, boolean apksInDirectory, TocFormat tocFormat)
       throws Exception {
     if (apksInDirectory) {
-      return createApksDirectory(buildApksResult, tmpDir);
+      return createApksDirectory(buildApksResult, tmpDir, tocFormat);
     } else {
-      return createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"));
+      return createApksArchiveFile(buildApksResult, tmpDir.resolve("bundle.apks"), tocFormat);
     }
   }
 
@@ -1377,17 +3025,7 @@ public class ExtractApksCommandTest {
         .build();
   }
 
-  /** Copies the testdata resource into the temporary directory. */
-  private Path copyToTempDir(String testDataPath) throws Exception {
-    Path testDataFilename = Paths.get(testDataPath).getFileName();
-    Path outputFile = tmp.newFolder().toPath().resolve(testDataFilename);
-    try (FileOutputStream fileOutputStream = new FileOutputStream(outputFile.toFile())) {
-      ByteStreams.copy(TestData.openStream(testDataPath), fileOutputStream);
-    }
-    return outputFile;
-  }
-
-  private Path inOutputDirectory(Path file) {
+  private Path inOutputDirectory(ZipPath file) {
     return tmpDir.resolve(Paths.get(file.toString()));
   }
 

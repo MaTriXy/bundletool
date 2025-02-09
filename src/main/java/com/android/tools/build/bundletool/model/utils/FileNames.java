@@ -25,5 +25,8 @@ public final class FileNames {
    */
   public static final String TABLE_OF_CONTENTS_FILE = "toc.pb";
 
+  /** Same as {@link TABLE_OF_CONTENTS_FILE}, but represented as JSON */
+  public static final String TABLE_OF_CONTENTS_JSON_FILE = "toc.json";
+
   private FileNames() {}
 }

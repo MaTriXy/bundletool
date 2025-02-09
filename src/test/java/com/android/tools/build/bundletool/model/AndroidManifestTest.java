@@ -16,31 +16,65 @@
 
 package com.android.tools.build.bundletool.model;
 
+import static com.android.tools.build.bundletool.model.AndroidManifest.APP_CATEGORY_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.APP_COMPONENT_FACTORY_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.APP_COMPONENT_FACTORY_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.AUTHORITIES_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.AUTHORITIES_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.DEBUGGABLE_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.DESCRIPTION_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.DESCRIPTION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.DEVELOPMENT_SDK_VERSION;
 import static com.android.tools.build.bundletool.model.AndroidManifest.HAS_CODE_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.ICON_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.ICON_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.INSTALL_LOCATION_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.IS_FEATURE_SPLIT_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.LABEL_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.LABEL_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.LOCALE_CONFIG_ATTRIBUTE_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.LOCALE_CONFIG_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.MODULE_TYPE_AI_VALUE;
 import static com.android.tools.build.bundletool.model.AndroidManifest.MODULE_TYPE_ASSET_VALUE;
 import static com.android.tools.build.bundletool.model.AndroidManifest.MODULE_TYPE_FEATURE_VALUE;
+import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_ATTRIBUTE_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.NAME_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.PERMISSION_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.PERMISSION_GROUP_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.model.AndroidManifest.RESOURCE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VALUE_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_CODE_RESOURCE_ID;
+import static com.android.tools.build.bundletool.model.AndroidManifest.VERSION_NAME_RESOURCE_ID;
 import static com.android.tools.build.bundletool.model.BundleModule.ModuleType.ASSET_MODULE;
 import static com.android.tools.build.bundletool.model.BundleModule.ModuleType.FEATURE_MODULE;
+import static com.android.tools.build.bundletool.model.BundleModule.ModuleType.ML_MODULE;
+import static com.android.tools.build.bundletool.model.ModuleDeliveryType.ALWAYS_INITIAL_INSTALL;
+import static com.android.tools.build.bundletool.model.ModuleDeliveryType.NO_INITIAL_INSTALL;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForAssetModule;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForMlModule;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.createIntentFilterForMainActivity;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withActivityAlias;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withCustomThemeActivity;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFastFollowDelivery;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFeatureCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFusingAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstallTimeDelivery;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstallTimeRemovableElement;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstant;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstantInstallTimeDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstantOnDemandDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withLegacyFusingAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withLegacyOnDemand;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMainActivity;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMainTvActivity;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMaxSdkCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkVersion;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withNativeActivity;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withOnDemandAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withOnDemandDelivery;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withSharedUserId;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withTargetSandboxVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withTypeAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withUsesSplit;
@@ -52,27 +86,29 @@ import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.xmlN
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.xmlNode;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.xmlResourceReferenceAttribute;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.android.aapt.Resources.XmlElement;
 import com.android.aapt.Resources.XmlNode;
 import com.android.tools.build.bundletool.TestData;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
-import com.android.tools.build.bundletool.model.exceptions.manifest.ManifestFusingException.FusingMissingIncludeAttribute;
-import com.android.tools.build.bundletool.model.exceptions.manifest.ManifestVersionException.VersionCodeMissingException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.utils.xmlproto.UnexpectedAttributeTypeException;
+import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoElement;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoNode;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableList;
 import com.google.protobuf.TextFormat;
 import java.util.Optional;
 import org.junit.Test;
+import org.junit.experimental.theories.DataPoints;
+import org.junit.experimental.theories.FromDataPoints;
+import org.junit.experimental.theories.Theories;
+import org.junit.experimental.theories.Theory;
 import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
 
 /** Tests for {@link AndroidManifest}. */
-@RunWith(JUnit4.class)
+@RunWith(Theories.class)
 public class AndroidManifestTest {
 
   private static final String ANDROID_NAMESPACE_URI = "http://schemas.android.com/apk/res/android";
@@ -82,12 +118,54 @@ public class AndroidManifestTest {
   private static final Version BUNDLE_TOOL_0_3_4 = Version.of("0.3.4");
   private static final Version BUNDLE_TOOL_0_3_3 = Version.of("0.3.3");
 
+  @DataPoints("sdkCodenames")
+  public static final String[] ANDROID_SDK_CODENAMES = {"R", "Q", "Sv2", "Tiramisu"};
+
   @Test
   public void getApplicationDebuggable_absent() {
     AndroidManifest androidManifest =
         AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("application")))));
     assertThat(androidManifest.getApplicationDebuggable()).isEmpty();
     assertThat(androidManifest.getEffectiveApplicationDebuggable()).isFalse();
+  }
+
+  @Test
+  public void hasMainActivity_definedAsActivityAlias_returnTrue() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.test.app",
+                withActivityAlias(
+                    "com.test.app.MainActivity",
+                    activity ->
+                        activity
+                            .addChildElement(
+                                createIntentFilterForMainActivity(
+                                    "android.intent.category.LAUNCHER"))
+                            .addChildElement(
+                                createIntentFilterForMainActivity(
+                                    "android.intent.category.LEANBACK_LAUNCHER")))));
+
+    assertThat(androidManifest.hasMainTvActivity()).isTrue();
+    assertThat(androidManifest.hasMainActivity()).isTrue();
+  }
+
+  @Test
+  public void getApplicationAppCategory_equalsGame() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlNode(
+                        xmlElement(
+                            "application",
+                            xmlDecimalIntegerAttribute(
+                                ANDROID_NAMESPACE_URI,
+                                "appCategory",
+                                APP_CATEGORY_RESOURCE_ID,
+                                0))))));
+    assertThat(androidManifest.getApplicationAppCategory()).hasValue(0);
   }
 
   @Test
@@ -145,19 +223,11 @@ public class AndroidManifestTest {
   }
 
   @Test
-  public void getMinSdkVersion_asString() {
+  @Theory
+  public void getMinSdkVersion_asString(@FromDataPoints("sdkCodenames") String codename) {
     AndroidManifest androidManifest =
-        AndroidManifest.create(androidManifest("com.test.app", withMinSdkVersion("Q")));
+        AndroidManifest.create(androidManifest("com.test.app", withMinSdkVersion(codename)));
     assertThat(androidManifest.getMinSdkVersion()).hasValue(DEVELOPMENT_SDK_VERSION);
-
-    AndroidManifest androidManifest2 =
-        AndroidManifest.create(androidManifest("com.test.app", withMinSdkVersion("R")));
-    assertThat(androidManifest2.getMinSdkVersion()).hasValue(DEVELOPMENT_SDK_VERSION);
-
-    // Lowercase disallowed.
-    AndroidManifest androidManifest3 =
-        AndroidManifest.create(androidManifest("com.test.app", withMinSdkVersion("r")));
-    assertThrows(UnexpectedAttributeTypeException.class, () -> androidManifest3.getMinSdkVersion());
   }
 
   @Test
@@ -197,8 +267,8 @@ public class AndroidManifestTest {
   public void getUsesSplits_missingNameAttribute_throws() {
     AndroidManifest androidManifest =
         AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("uses-split")))));
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> androidManifest.getUsesSplits());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, androidManifest::getUsesSplits);
     assertThat(exception)
         .hasMessageThat()
         .contains("<uses-split> element is missing the 'android:name' attribute");
@@ -334,14 +404,27 @@ public class AndroidManifestTest {
                     xmlDecimalIntegerAttribute(
                         ANDROID_NAMESPACE_URI, "versionCode", VERSION_CODE_RESOURCE_ID, 123),
                     xmlNode(xmlElement("application")))));
-    assertThat(androidManifest.getVersionCode()).isEqualTo(123);
+    assertThat(androidManifest.getVersionCode()).hasValue(123);
   }
 
   @Test
-  public void getVersionCode_missing_throws() {
+  public void getInstallLocation() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlDecimalIntegerAttribute(
+                        ANDROID_NAMESPACE_URI, "installLocation", INSTALL_LOCATION_RESOURCE_ID, 0),
+                    xmlNode(xmlElement("application")))));
+    assertThat(androidManifest.getInstallLocationValue()).hasValue("auto");
+  }
+
+  @Test
+  public void getVersionCode_missing_isEmpty() {
     AndroidManifest androidManifest =
         AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("application")))));
-    assertThrows(VersionCodeMissingException.class, () -> androidManifest.getVersionCode());
+    assertThat(androidManifest.getVersionCode()).isEmpty();
   }
 
   @Test
@@ -361,6 +444,29 @@ public class AndroidManifestTest {
     assertThat(exception)
         .hasMessageThat()
         .contains("Attribute 'versionCode' expected to have type 'decimal int' but found:");
+  }
+
+  @Test
+  public void getVersionName() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlAttribute(
+                        ANDROID_NAMESPACE_URI,
+                        "versionName",
+                        VERSION_NAME_RESOURCE_ID,
+                        "new app version"),
+                    xmlNode(xmlElement("application")))));
+    assertThat(androidManifest.getVersionName()).hasValue("new app version");
+  }
+
+  @Test
+  public void getVersionName_missing_isEmpty() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("application")))));
+    assertThat(androidManifest.getVersionName()).isEmpty();
   }
 
   @Test
@@ -491,9 +597,19 @@ public class AndroidManifestTest {
   }
 
   @Test
-  public void deliveryTypeAndOnDemandAttribute_deliveryElement_conditions() {
+  public void deliveryTypeAndOnDemandAttribute_deliveryElement_minSdkCondition() {
     AndroidManifest manifest =
         AndroidManifest.create(androidManifest("com.test.app", withMinSdkCondition(21)));
+
+    assertThat(manifest.getManifestDeliveryElement()).isPresent();
+    assertThat(manifest.getOnDemandAttribute()).isEmpty();
+    assertThat(manifest.isDeliveryTypeDeclared()).isTrue();
+  }
+
+  @Test
+  public void deliveryTypeAndOnDemandAttribute_deliveryElement_maxSdkCondition() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withMaxSdkCondition(21)));
 
     assertThat(manifest.getManifestDeliveryElement()).isPresent();
     assertThat(manifest.getOnDemandAttribute()).isEmpty();
@@ -541,6 +657,17 @@ public class AndroidManifestTest {
   }
 
   @Test
+  public void moduleTypeAttribute_aiPack() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifestForAssetModule("com.test.app", withTypeAttribute(MODULE_TYPE_AI_VALUE)));
+
+    assertThat(manifest.getOptionalModuleType()).hasValue(ASSET_MODULE);
+    assertThat(manifest.getOptionalModuleTypeAttributeValue()).hasValue(MODULE_TYPE_AI_VALUE);
+    assertThat(manifest.getModuleType()).isEqualTo(ASSET_MODULE);
+  }
+
+  @Test
   public void moduleTypeAttribute_featureModule() {
     AndroidManifest manifest =
         AndroidManifest.create(
@@ -549,6 +676,15 @@ public class AndroidManifestTest {
     assertThat(manifest.getOptionalModuleType()).isPresent();
     assertThat(manifest.getOptionalModuleType()).hasValue(FEATURE_MODULE);
     assertThat(manifest.getModuleType()).isEqualTo(FEATURE_MODULE);
+  }
+
+  @Test
+  public void moduleTypeAttribute_mlModule() {
+    AndroidManifest manifest = AndroidManifest.create(androidManifestForMlModule("com.test.app"));
+
+    assertThat(manifest.getOptionalModuleType()).isPresent();
+    assertThat(manifest.getOptionalModuleType()).hasValue(ML_MODULE);
+    assertThat(manifest.getModuleType()).isEqualTo(ML_MODULE);
   }
 
   @Test
@@ -565,8 +701,8 @@ public class AndroidManifestTest {
         AndroidManifest.create(
             androidManifest("com.test.app", withTypeAttribute("invalid-attribute")));
 
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> manifest.getModuleType());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, manifest::getModuleType);
     assertThat(exception)
         .hasMessageThat()
         .contains("Found invalid type attribute invalid-attribute for <module> element.");
@@ -609,8 +745,7 @@ public class AndroidManifestTest {
     AndroidManifest androidManifest =
         AndroidManifest.create(
             androidManifest("com.test.app", withLegacyFusingAttribute(false)), BUNDLE_TOOL_0_3_4);
-    assertThrows(
-        FusingMissingIncludeAttribute.class, () -> androidManifest.getIsModuleIncludedInFusing());
+    assertThrows(InvalidBundleException.class, androidManifest::getIsModuleIncludedInFusing);
   }
 
   @Test
@@ -655,10 +790,8 @@ public class AndroidManifestTest {
                             "module",
                             xmlNode(xmlElement(DISTRIBUTION_NAMESPACE_URI, "fusing")))))),
             BUNDLE_TOOL_0_3_4);
-    FusingMissingIncludeAttribute exception =
-        assertThrows(
-            FusingMissingIncludeAttribute.class,
-            () -> androidManifest.getIsModuleIncludedInFusing());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, androidManifest::getIsModuleIncludedInFusing);
     assertThat(exception)
         .hasMessageThat()
         .contains("<fusing> element is missing the 'include' attribute");
@@ -677,10 +810,8 @@ public class AndroidManifestTest {
                             "module",
                             xmlNode(xmlElement(DISTRIBUTION_NAMESPACE_URI, "fusing")))))),
             BUNDLE_TOOL_0_3_3);
-    FusingMissingIncludeAttribute exception =
-        assertThrows(
-            FusingMissingIncludeAttribute.class,
-            () -> androidManifest.getIsModuleIncludedInFusing());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, androidManifest::getIsModuleIncludedInFusing);
     assertThat(exception)
         .hasMessageThat()
         .contains("<fusing> element is missing the 'include' attribute");
@@ -701,10 +832,8 @@ public class AndroidManifestTest {
                             "module",
                             xmlNode(xmlElement(DISTRIBUTION_NAMESPACE_URI, "fusing")))))),
             BUNDLE_TOOL_0_3_4);
-    FusingMissingIncludeAttribute exception =
-        assertThrows(
-            FusingMissingIncludeAttribute.class,
-            () -> androidManifest.getIsModuleIncludedInFusing());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, androidManifest::getIsModuleIncludedInFusing);
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo("<fusing> element is missing the 'include' attribute (split: 'feature1').");
@@ -724,10 +853,8 @@ public class AndroidManifestTest {
                             "module",
                             xmlNode(xmlElement(DISTRIBUTION_NAMESPACE_URI, "fusing")))))),
             BUNDLE_TOOL_0_3_3);
-    FusingMissingIncludeAttribute exception =
-        assertThrows(
-            FusingMissingIncludeAttribute.class,
-            () -> androidManifest.getIsModuleIncludedInFusing());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, androidManifest::getIsModuleIncludedInFusing);
     assertThat(exception)
         .hasMessageThat()
         .isEqualTo("<fusing> element is missing the 'include' attribute (split: 'feature1').");
@@ -785,8 +912,8 @@ public class AndroidManifestTest {
                             metadataWithValue("com.android.dynamic.apk.fused.modules", "value1"),
                             metadataWithValue(
                                 "com.android.dynamic.apk.fused.modules", "value2"))))));
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> androidManifest.getFusedModuleNames());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, androidManifest::getFusedModuleNames);
     assertThat(exception).hasMessageThat().contains("multiple <meta-data> elements for key");
   }
 
@@ -858,13 +985,26 @@ public class AndroidManifestTest {
             Optional.of(false));
 
     assertThat(configManifest.getPackageName()).isEqualTo("com.package.test");
-    assertThat(configManifest.getVersionCode()).isEqualTo(1);
+    assertThat(configManifest.getVersionCode()).hasValue(1);
     assertThat(configManifest.getHasCode()).hasValue(false);
     assertThat(configManifest.getSplitId()).hasValue("x86");
     assertThat(configManifest.getConfigForSplit()).hasValue("feature1");
     assertThat(configManifest.isDeliveryTypeDeclared()).isFalse();
     assertThat(configManifest.getIsFeatureSplit()).isEmpty();
     assertThat(configManifest.getExtractNativeLibsValue()).hasValue(false);
+  }
+
+  @Test
+  public void configSplit_emptyFeatureSplitId() {
+    AndroidManifest moduleManifest = AndroidManifest.create(androidManifest("com.package.test"));
+    AndroidManifest configManifest =
+        AndroidManifest.createForConfigSplit(
+            moduleManifest.getPackageName(),
+            moduleManifest.getVersionCode(),
+            /* splitId= */ "x86",
+            /* featureSplitId= */ "",
+            /* extractNativeLibs= */ Optional.of(false));
+    assertThat(configManifest.getConfigForSplit()).isEmpty();
   }
 
   @Test
@@ -887,7 +1027,9 @@ public class AndroidManifestTest {
             Optional.empty());
 
     XmlProtoNode generatedManifest = configManifest.getManifestRoot();
-    assertThat(generatedManifest.getProto()).isEqualTo(expectedXmlNodeBuilder.build());
+    assertThat(generatedManifest.getProto())
+        .ignoringRepeatedFieldOrder()
+        .isEqualTo(expectedXmlNodeBuilder.build());
   }
 
   @Test
@@ -912,9 +1054,10 @@ public class AndroidManifestTest {
                     "manifest",
                     xmlNode(xmlElement("application", metadataWithValue("metadata-key", "123"))))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> androidManifest.getMetadataResourceId("metadata-key"));
+            InvalidBundleException.class,
+            () -> androidManifest.getMetadataResourceId("metadata-key"));
     assertThat(exception)
         .hasMessageThat()
         .contains(
@@ -933,6 +1076,61 @@ public class AndroidManifestTest {
   }
 
   @Test
+  public void hasExplicitlyDefinedNativeActivities_noNativeActivities() {
+    AndroidManifest manifest = AndroidManifest.create(androidManifest("com.package.test"));
+
+    assertThat(manifest.hasExplicitlyDefinedNativeActivities()).isFalse();
+  }
+
+  @Test
+  public void hasExplicitlyDefinedNativeActivities_someNativeActivities() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test",
+                withNativeActivity("libA"),
+                withNativeActivity("libB"),
+                withNativeActivity("libA")));
+
+    assertThat(manifest.hasExplicitlyDefinedNativeActivities()).isTrue();
+  }
+
+  @Test
+  public void hasExplicitlyDefinedNativeActivities_someActivitiesButNotNative() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.package.test", withMainActivity("com.package.test.MainActivity")));
+
+    assertThat(manifest.hasExplicitlyDefinedNativeActivities()).isFalse();
+  }
+
+  @Test
+  public void getActivitiesByName() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test",
+                withNativeActivity("libA"),
+                withMainActivity("main"),
+                withCustomThemeActivity("activity1", 123)));
+
+    assertThat(manifest.getActivitiesByName()).hasSize(3);
+    assertThat(manifest.getActivitiesByName().keySet())
+        .containsExactly("main", "activity1", "android.app.NativeActivity");
+  }
+
+  @Test
+  public void getActivitiesByName_nameDuplication() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test", withMainActivity("main"), withMainActivity("main")));
+
+    assertThat(manifest.getActivitiesByName().keySet()).containsExactly("main");
+    assertThat(manifest.getActivitiesByName().get("main")).hasSize(2);
+  }
+
+  @Test
   public void getMetadataValueAsInteger() {
     AndroidManifest androidManifest =
         AndroidManifest.create(
@@ -943,6 +1141,115 @@ public class AndroidManifestTest {
                         xmlElement(
                             "application", metadataWithValueAsInteger("metadata-key", 123))))));
     assertThat(androidManifest.getMetadataValueAsInteger("metadata-key")).hasValue(123);
+  }
+
+  @Test
+  public void getMetadataValueAsBoolean() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlNode(
+                        xmlElement(
+                            "application", metadataWithValueAsBoolean("metadata-key", true))))));
+    assertThat(androidManifest.getMetadataValueAsBoolean("metadata-key")).hasValue(true);
+  }
+
+  @Test
+  public void hasSharedUserId() {
+    AndroidManifest androidManifest = AndroidManifest.create(androidManifest("com.test.app"));
+    assertThat(androidManifest.hasSharedUserId()).isFalse();
+
+    AndroidManifest androidManifest2 =
+        AndroidManifest.create(androidManifest("com.test.app", withSharedUserId("shared_user_id")));
+    assertThat(androidManifest2.hasSharedUserId()).isTrue();
+  }
+
+  @Test
+  public void isHeadless_true() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.package.test", withNativeActivity("libA")));
+
+    assertThat(manifest.isHeadless()).isTrue();
+  }
+
+  @Test
+  public void isHeadless_mainPhoneActivity_false() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test",
+                withMainActivity("com.package.test.MainActivity"),
+                withNativeActivity("libA")));
+
+    assertThat(manifest.isHeadless()).isFalse();
+  }
+
+  @Test
+  public void isHeadless_mainTvActivity_false() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test", withMainTvActivity("com.package.test.MainActivity")));
+
+    assertThat(manifest.isHeadless()).isFalse();
+  }
+
+  @Test
+  public void isHeadless_false_activitiesWithSameName() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test",
+                withMainActivity("com.package.test.Activity"),
+                withMainActivity("com.package.test.Activity"),
+                withNativeActivity("libA"),
+                withNativeActivity("libA")));
+
+    assertThat(manifest.isHeadless()).isFalse();
+  }
+
+  @Test
+  public void hasMainActivity_true() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.package.test", withMainActivity(".MainActivity")));
+
+    assertThat(manifest.hasMainActivity()).isTrue();
+  }
+
+  @Test
+  public void hasMainActivity_false() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test",
+                withMainTvActivity(".MainTvActivity"),
+                withNativeActivity("libA")));
+
+    assertThat(manifest.hasMainActivity()).isFalse();
+  }
+
+  @Test
+  public void hasMainTvActivity_true() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.package.test", withMainTvActivity(".MainActivity")));
+
+    assertThat(manifest.hasMainTvActivity()).isTrue();
+  }
+
+  @Test
+  public void hasMainTvActivity_false() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.package.test",
+                withMainActivity(".MainTvActivity"),
+                withNativeActivity("libA")));
+
+    assertThat(manifest.hasMainTvActivity()).isFalse();
   }
 
   private XmlNode metadataWithValue(String key, String value) {
@@ -964,6 +1271,15 @@ public class AndroidManifestTest {
                     ANDROID_NAMESPACE_URI, "value", VALUE_RESOURCE_ID, value))));
   }
 
+  private XmlNode metadataWithValueAsBoolean(String key, boolean value) {
+    return xmlNode(
+        xmlElement(
+            "meta-data",
+            ImmutableList.of(
+                xmlAttribute(ANDROID_NAMESPACE_URI, "name", NAME_RESOURCE_ID, key),
+                xmlBooleanAttribute(ANDROID_NAMESPACE_URI, "value", VALUE_RESOURCE_ID, value))));
+  }
+
   private XmlNode metadataWithResourceRef(String key, int resourceIdValue) {
     return xmlNode(
         xmlElement(
@@ -972,5 +1288,353 @@ public class AndroidManifestTest {
                 xmlAttribute(ANDROID_NAMESPACE_URI, "name", NAME_RESOURCE_ID, key),
                 xmlResourceReferenceAttribute(
                     ANDROID_NAMESPACE_URI, "resource", RESOURCE_RESOURCE_ID, resourceIdValue))));
+  }
+
+  @Test
+  public void getDeliveryType_noConfig() throws Exception {
+    AndroidManifest manifest = AndroidManifest.create(androidManifest("com.test.app"));
+    assertThat(manifest.getModuleDeliveryType()).isEqualTo(ALWAYS_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getDeliveryType_legacy_onDemandTrue() throws Exception {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withOnDemandAttribute(true)));
+    assertThat(manifest.getModuleDeliveryType()).isEqualTo(ModuleDeliveryType.NO_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getDeliveryType_legacy_onDemandFalse() throws Exception {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withOnDemandAttribute(false)));
+    assertThat(manifest.getModuleDeliveryType()).isEqualTo(ALWAYS_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getDeliveryType_onDemandElement_only() throws Exception {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withOnDemandDelivery()));
+    assertThat(manifest.getModuleDeliveryType()).isEqualTo(ModuleDeliveryType.NO_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getDeliveryType_onDemandElement_andConditions() throws Exception {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.test.app", withOnDemandDelivery(), withMinSdkCondition(21)));
+    assertThat(manifest.getModuleDeliveryType())
+        .isEqualTo(ModuleDeliveryType.CONDITIONAL_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getDeliveryType_installTimeElement_noConditions() throws Exception {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.test.app", withInstallTimeDelivery(), withOnDemandDelivery()));
+    assertThat(manifest.getModuleDeliveryType()).isEqualTo(ALWAYS_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getInstantDeliveryType_instantAttributeTrue() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifestForAssetModule("com.test.app", withInstant(true)));
+    assertThat(manifest.getInstantModuleDeliveryType()).isEqualTo(NO_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getInstantDeliveryType_onDemandElement() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifestForAssetModule("com.test.app", withInstantOnDemandDelivery()));
+    assertThat(manifest.getInstantModuleDeliveryType()).isEqualTo(NO_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void getInstantDeliveryType_installTimeElement() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifestForAssetModule("com.test.app", withInstantInstallTimeDelivery()));
+    assertThat(manifest.getInstantModuleDeliveryType()).isEqualTo(ALWAYS_INITIAL_INSTALL);
+  }
+
+  @Test
+  public void hasApplicationAttribute_present() {
+    AndroidManifest androidManifest =
+        createManifestWithApplicationAttribute("myAttributeName", 0x12341234, "value");
+
+    assertThat(androidManifest.hasApplicationAttribute(0x12341234)).isTrue();
+  }
+
+  @Test
+  public void hasApplicationAttribute_missing_returnsFalse() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("application")))));
+
+    assertThat(androidManifest.hasApplicationAttribute(0x12341234)).isFalse();
+  }
+
+  @Test
+  public void getPermissions_success() {
+    XmlProtoElement permission1 =
+        new XmlProtoElement(
+            xmlElement(
+                PERMISSION_ELEMENT_NAME,
+                xmlAttribute(ANDROID_NAMESPACE_URI, "name", NAME_RESOURCE_ID, "SEND_SMS")));
+    XmlProtoElement permission2 =
+        new XmlProtoElement(
+            xmlElement(
+                PERMISSION_ELEMENT_NAME,
+                ImmutableList.of(
+                    xmlAttribute(
+                        ANDROID_NAMESPACE_URI,
+                        "name",
+                        NAME_RESOURCE_ID,
+                        "com.some.other.PERMISSION"),
+                    xmlResourceReferenceAttribute(
+                        ANDROID_NAMESPACE_URI, ICON_ATTRIBUTE_NAME, ICON_RESOURCE_ID, 12341234),
+                    xmlResourceReferenceAttribute(
+                        ANDROID_NAMESPACE_URI, LABEL_ATTRIBUTE_NAME, LABEL_RESOURCE_ID, 0x12345678),
+                    xmlResourceReferenceAttribute(
+                        ANDROID_NAMESPACE_URI,
+                        DESCRIPTION_ATTRIBUTE_NAME,
+                        DESCRIPTION_RESOURCE_ID,
+                        0x87654321),
+                    xmlAttribute(ANDROID_NAMESPACE_URI, "protectionLevel", "normal|signature"),
+                    xmlAttribute(ANDROID_NAMESPACE_URI, "permissionGroup", "group1"))));
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest", xmlNode(permission1.getProto()), xmlNode(permission2.getProto()))));
+
+    assertThat(androidManifest.getPermissions()).containsExactly(permission1, permission2);
+  }
+
+  @Test
+  public void getPermissionGroups_success() {
+    XmlProtoElement permisisonGroup1 =
+        new XmlProtoElement(
+            xmlElement(
+                PERMISSION_GROUP_ELEMENT_NAME,
+                xmlAttribute(ANDROID_NAMESPACE_URI, "name", NAME_RESOURCE_ID, "group.name.1")));
+    XmlProtoElement permisisonGroup2 =
+        new XmlProtoElement(
+            xmlElement(
+                PERMISSION_GROUP_ELEMENT_NAME,
+                ImmutableList.of(
+                    xmlAttribute(ANDROID_NAMESPACE_URI, "name", NAME_RESOURCE_ID, "group.name.2"),
+                    xmlResourceReferenceAttribute(
+                        ANDROID_NAMESPACE_URI, ICON_ATTRIBUTE_NAME, ICON_RESOURCE_ID, 12341234),
+                    xmlResourceReferenceAttribute(
+                        ANDROID_NAMESPACE_URI, LABEL_ATTRIBUTE_NAME, LABEL_RESOURCE_ID, 0x12345678),
+                    xmlResourceReferenceAttribute(
+                        ANDROID_NAMESPACE_URI,
+                        DESCRIPTION_ATTRIBUTE_NAME,
+                        DESCRIPTION_RESOURCE_ID,
+                        0x87654321))));
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlNode(permisisonGroup1.getProto()),
+                    xmlNode(permisisonGroup2.getProto()))));
+
+    assertThat(androidManifest.getPermissionGroups())
+        .containsExactly(permisisonGroup1, permisisonGroup2);
+  }
+
+  @Test
+  public void getPermissions_isEmpty() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("application")))));
+
+    assertThat(androidManifest.getPermissionGroups()).isEmpty();
+  }
+
+  private AndroidManifest createManifestWithApplicationAttribute(
+      String name, int resourceId, String value) {
+    return AndroidManifest.create(
+        xmlNode(
+            xmlElement(
+                "manifest",
+                xmlNode(
+                    xmlElement(
+                        "application",
+                        xmlAttribute(ANDROID_NAMESPACE_URI, name, resourceId, value))))));
+  }
+
+  private AndroidManifest createManifestWithApplicationRefIdAttribute(
+      String name, int resourceId, int value) {
+    return AndroidManifest.create(
+        xmlNode(
+            xmlElement(
+                "manifest",
+                xmlNode(
+                    xmlElement(
+                        "application",
+                        xmlResourceReferenceAttribute(
+                            ANDROID_NAMESPACE_URI, name, resourceId, value))))));
+  }
+
+  @Test
+  public void hasLocaleConfig_missing_returnsFalse() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("application")))));
+
+    assertThat(androidManifest.hasLocaleConfig()).isFalse();
+  }
+
+  @Test
+  public void hasLocaleConfig_present() {
+    AndroidManifest androidManifest =
+        createManifestWithApplicationRefIdAttribute(
+            LOCALE_CONFIG_ATTRIBUTE_NAME, LOCALE_CONFIG_RESOURCE_ID, 0x12345678);
+
+    assertThat(androidManifest.hasLocaleConfig()).isTrue();
+  }
+
+  @Test
+  public void getAppComponentFactoryAttribute_returnsEmpty() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(xmlElement("application")))));
+
+    assertThat(androidManifest.getAppComponentFactoryAttribute()).isEmpty();
+  }
+
+  @Test
+  public void getAppComponentFactoryAttribute_present() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlNode(
+                        xmlElement(
+                            "application",
+                            xmlAttribute(
+                                ANDROID_NAMESPACE_URI,
+                                APP_COMPONENT_FACTORY_ATTRIBUTE_NAME,
+                                APP_COMPONENT_FACTORY_RESOURCE_ID,
+                                "my.package.customFactory"))))));
+
+    assertThat(androidManifest.getAppComponentFactoryAttribute())
+        .hasValue("my.package.customFactory");
+  }
+
+  @Test
+  public void getAuthoritiesAttribute_present() {
+    AndroidManifest androidManifest =
+        AndroidManifest.create(
+            xmlNode(
+                xmlElement(
+                    "manifest",
+                    xmlNode(
+                        xmlElement(
+                            "application",
+                            xmlAttribute(
+                                ANDROID_NAMESPACE_URI,
+                                AUTHORITIES_ATTRIBUTE_NAME,
+                                AUTHORITIES_RESOURCE_ID,
+                                "my.package.customAuthority"))))));
+
+    assertThat(androidManifest.getAuthoritiesAttribute()).hasValue("my.package.customAuthority");
+  }
+
+  @Test
+  public void getUsesFeatureElement_present() {
+    XmlElement usesFeatureElement =
+        xmlElement(
+            "uses-feature",
+            xmlAttribute(
+                ANDROID_NAMESPACE_URI, NAME_ATTRIBUTE_NAME, NAME_RESOURCE_ID, "featureName"));
+    AndroidManifest androidManifest =
+        AndroidManifest.create(xmlNode(xmlElement("manifest", xmlNode(usesFeatureElement))));
+
+    assertThat(androidManifest.getUsesFeatureElement("featureName"))
+        .containsExactlyElementsIn(ImmutableList.of(new XmlProtoElement(usesFeatureElement)));
+  }
+
+  @Test
+  public void getUsesFeatureElement_absent() {
+    AndroidManifest androidManifest = AndroidManifest.create(xmlNode(xmlElement("manifest")));
+
+    assertThat(androidManifest.getUsesFeatureElement("featureName")).isEmpty();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_legacyOnDemandTrue_returnsFalse() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withOnDemandAttribute(true)));
+    assertThat(manifest.isAlwaysInstalledModule()).isFalse();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_legacyOnDemandFalse_returnsTrue() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withOnDemandAttribute(false)));
+    assertThat(manifest.isAlwaysInstalledModule()).isTrue();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_noDeliveryElements_returnsTrue() {
+    AndroidManifest manifest = AndroidManifest.create(xmlNode(xmlElement("manifest")));
+    assertThat(manifest.isAlwaysInstalledModule()).isTrue();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_moduleConditions_returnsFalse() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.test.app", withFeatureCondition("com.feature1")));
+    assertThat(manifest.isAlwaysInstalledModule()).isFalse();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_minSdkCondition_returnsFalse() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withMinSdkCondition(21)));
+    assertThat(manifest.isAlwaysInstalledModule()).isFalse();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_onDemandElement_returnsFalse() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withOnDemandDelivery()));
+    assertThat(manifest.isAlwaysInstalledModule()).isFalse();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_fastFollow_returnsFalse() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest(
+                "com.test.app",
+                withTypeAttribute(MODULE_TYPE_ASSET_VALUE),
+                withFastFollowDelivery()));
+    assertThat(manifest.isAlwaysInstalledModule()).isFalse();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_installTimeRemovableFalse_returnsTrue() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.test.app", withInstallTimeRemovableElement(false)));
+    assertThat(manifest.isAlwaysInstalledModule()).isTrue();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_installTimeRemovableTrue_returnsFalse() {
+    AndroidManifest manifest =
+        AndroidManifest.create(
+            androidManifest("com.test.app", withInstallTimeRemovableElement(true)));
+    assertThat(manifest.isAlwaysInstalledModule()).isFalse();
+  }
+
+  @Test
+  public void isAlwaysInstalledModule_installTimeNoRemovable_returnsTrue() {
+    AndroidManifest manifest =
+        AndroidManifest.create(androidManifest("com.test.app", withInstallTimeDelivery()));
+    assertThat(manifest.isAlwaysInstalledModule()).isTrue();
   }
 }

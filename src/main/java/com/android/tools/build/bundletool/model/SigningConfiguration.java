@@ -15,42 +15,69 @@
  */
 package com.android.tools.build.bundletool.model;
 
-import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndReadable;
-import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.base.Preconditions.checkState;
 
-import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
+import com.android.apksig.SigningCertificateLineage;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.Immutable;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Path;
-import java.security.KeyStore;
-import java.security.KeyStore.PasswordProtection;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
-import java.security.UnrecoverableKeyException;
-import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
-import java.util.Arrays;
 import java.util.Optional;
-import javax.security.auth.DestroyFailedException;
 
-/** Information required to sign an APK. */
+/** Information required to sign the generated APKs. */
 @SuppressWarnings("Immutable") // PrivateKey and X509Certificate are considered immutable.
 @Immutable
 @AutoValue
 @AutoValue.CopyAnnotations
 public abstract class SigningConfiguration {
 
-  SigningConfiguration() {}
+  /**
+   * Config of the signer to sign the generated APKs.
+   *
+   * <p>If {@link getSigningCertificateLineage} is empty, then this is used for signing with all
+   * supported signature schemes.
+   *
+   * <p>If {@link getSigningCertificateLineage} is present, then this corresponds to the newest
+   * certificate in the lineage, and is used for v3 signing on qualifying APKs (see {@link
+   * getMinimumV3RotationApiVersion}).
+   */
+  public abstract SignerConfig getSignerConfig();
 
-  public abstract PrivateKey getPrivateKey();
+  /**
+   * Minimum platform API version for which v3 signing should be performed. If no value is present,
+   * then v3 signing is performed for all versions.
+   */
+  public abstract Optional<Integer> getMinimumV3RotationApiVersion();
 
-  public abstract ImmutableList<X509Certificate> getCertificates();
+  /**
+   * Signing certificate lineage used for v3 signing on qualifying APKs (see {@link
+   * getMinimumV3RotationApiVersion}).
+   */
+  public abstract Optional<SigningCertificateLineage> getSigningCertificateLineage();
+
+  /**
+   * Config of the signer corresponsing to the oldest certificate in the {@link
+   * getSigningCertificateLineage} (this can only be set if a lineage is present).
+   *
+   * <p>This is used for v1 and v2 signing on qualifying APKs that are signed with v3 key rotation
+   * (see {@link getMinimumV3RotationApiVersion}). This is never used for v3 signing.
+   */
+  public abstract Optional<SignerConfig> getOldestSigner();
+
+  /**
+   * Minimum Android platform version (API Level) for which an APK's rotated signing key should be
+   * used to produce the APK's signature. The original signing key for the APK will be used for all
+   * previous platform versions.
+   */
+  public abstract Optional<Integer> getRotationMinSdkVersion();
+
+  public abstract Builder toBuilder();
+
+  public int getEffectiveMinimumV3RotationApiVersion() {
+    return getMinimumV3RotationApiVersion().orElse(1);
+  }
 
   public static Builder builder() {
     return new AutoValue_SigningConfiguration.Builder();
@@ -59,13 +86,39 @@ public abstract class SigningConfiguration {
   /** Builder of {@link SigningConfiguration} instances. */
   @AutoValue.Builder
   public abstract static class Builder {
-    /** Sets the private key to use to sign the APK. */
-    public abstract Builder setPrivateKey(PrivateKey privateKey);
+    public abstract Builder setSignerConfig(SignerConfig signerConfig);
 
-    /** Sets the certificate corresponding to the private key. */
-    public abstract Builder setCertificates(ImmutableList<X509Certificate> certificates);
+    public Builder setSignerConfig(PrivateKey privateKey, X509Certificate certificate) {
+      return setSignerConfig(privateKey, ImmutableList.of(certificate));
+    }
 
-    public abstract SigningConfiguration build();
+    public Builder setSignerConfig(
+        PrivateKey privateKey, ImmutableList<X509Certificate> certificates) {
+      return setSignerConfig(
+          SignerConfig.builder().setPrivateKey(privateKey).setCertificates(certificates).build());
+    }
+
+    public abstract Builder setMinimumV3RotationApiVersion(
+        Optional<Integer> minimumV3RotationApiVersion);
+
+    public abstract Builder setRotationMinSdkVersion(Optional<Integer> rotationMinSdkVersion);
+
+    public abstract Builder setSigningCertificateLineage(
+        SigningCertificateLineage signingCertificateLineage);
+
+    public abstract Builder setOldestSigner(SignerConfig oldestSigner);
+
+    abstract SigningConfiguration autoBuild();
+
+    public SigningConfiguration build() {
+      SigningConfiguration signingConfiguration = autoBuild();
+      if (signingConfiguration.getOldestSigner().isPresent()) {
+        checkState(
+            signingConfiguration.getSigningCertificateLineage().isPresent(),
+            "Oldest signer should not be provided without signing certificate lineage.");
+      }
+      return signingConfiguration;
+    }
   }
 
   /**
@@ -83,103 +136,10 @@ public abstract class SigningConfiguration {
       String keyAlias,
       Optional<Password> optionalKeystorePassword,
       Optional<Password> optionalKeyPassword) {
-    checkFileExistsAndReadable(keystorePath);
+    SignerConfig signerConfig =
+        SignerConfig.extractFromKeystore(
+            keystorePath, keyAlias, optionalKeystorePassword, optionalKeyPassword);
 
-    KeyStore keystore;
-    try {
-      // With Java 8, this is able to read both JKS and PKCS12 keystores.
-      keystore = KeyStore.getInstance("JKS");
-    } catch (KeyStoreException e) {
-      throw CommandExecutionException.builder()
-          .withCause(e)
-          .withMessage("Unable to build a keystore instance: " + e.getMessage())
-          .build();
-    }
-
-    PasswordProtection keystorePassword = null;
-    PasswordProtection keyPassword = null;
-    try (InputStream keystoreInputStream = new FileInputStream(keystorePath.toFile())) {
-      // 1. Prompt for the keystore password if it wasn't provided.
-      keystorePassword =
-          optionalKeystorePassword
-              .map(Password::getValue)
-              .orElseGet(
-                  () ->
-                      new PasswordProtection(
-                          System.console().readPassword("Enter keystore password: ")));
-
-      // 2. Load the KeyStore (required to perform any operation).
-      try {
-        keystore.load(keystoreInputStream, keystorePassword.getPassword());
-      } catch (IOException e) {
-        if (e.getCause() instanceof UnrecoverableKeyException) {
-          throw new CommandExecutionException("Incorrect keystore password.");
-        }
-        throw e;
-      }
-
-      // 3. If the key password was provided, use it.
-      if (optionalKeyPassword.isPresent()) {
-        try {
-          return readSigningConfigFromLoadedKeyStore(
-              keystore, keyAlias, optionalKeyPassword.get().getValue().getPassword());
-        } catch (UnrecoverableKeyException e) {
-          throw new CommandExecutionException("Incorrect key password.", e);
-        }
-      }
-
-      // 4. Otherwise, we first try with the keystore password. If it doesn't work, we prompt the
-      //    user for the password and try again.
-      try {
-        return readSigningConfigFromLoadedKeyStore(
-            keystore, keyAlias, keystorePassword.getPassword());
-      } catch (UnrecoverableKeyException expected) {
-        try {
-          keyPassword =
-              new PasswordProtection(
-                  System.console().readPassword("Enter password for key '%s': ", keyAlias));
-          return readSigningConfigFromLoadedKeyStore(keystore, keyAlias, keyPassword.getPassword());
-        } catch (UnrecoverableKeyException e) {
-          throw new CommandExecutionException("Incorrect key password.", e);
-        }
-      }
-    } catch (IOException | NoSuchAlgorithmException | KeyStoreException | CertificateException e) {
-      throw CommandExecutionException.builder()
-          .withCause(e)
-          .withMessage("Error while loading private key and certificates from the keystore.")
-          .build();
-    } finally {
-      // Destroy the passwords.
-      try {
-        if (keyPassword != null) {
-          keyPassword.destroy();
-        }
-        if (keystorePassword != null) {
-          keystorePassword.destroy();
-        }
-      } catch (DestroyFailedException e) {
-        // Ignore. Never thrown by PasswordProtection#destroy().
-      }
-    }
-  }
-
-  private static SigningConfiguration readSigningConfigFromLoadedKeyStore(
-      KeyStore keystore, String keyAlias, char[] keyPassword)
-      throws NoSuchAlgorithmException, KeyStoreException, UnrecoverableKeyException {
-    PrivateKey privateKey = (PrivateKey) keystore.getKey(keyAlias, keyPassword);
-    Certificate[] certChain = keystore.getCertificateChain(keyAlias);
-    if (certChain == null) {
-      throw CommandExecutionException.builder()
-          .withMessage("No key found with alias '%s' in keystore.", keyAlias)
-          .build();
-    }
-
-    ImmutableList<X509Certificate> certificates =
-        Arrays.stream(certChain).map(c -> (X509Certificate) c).collect(toImmutableList());
-
-    return SigningConfiguration.builder()
-        .setPrivateKey(privateKey)
-        .setCertificates(certificates)
-        .build();
+    return SigningConfiguration.builder().setSignerConfig(signerConfig).build();
   }
 }

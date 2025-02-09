@@ -21,6 +21,7 @@ import static com.android.tools.build.bundletool.testing.DeviceFactory.density;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.lDeviceWithLocales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.locales;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.mergeSpecs;
+import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkRuntimeSupported;
 import static com.android.tools.build.bundletool.testing.DeviceFactory.sdkVersion;
 import static com.android.tools.build.bundletool.testing.FakeSystemEnvironmentProvider.ANDROID_HOME;
 import static com.android.tools.build.bundletool.testing.FakeSystemEnvironmentProvider.ANDROID_SERIAL;
@@ -34,14 +35,16 @@ import com.android.bundle.Devices.DeviceSpec;
 import com.android.ddmlib.IDevice.DeviceState;
 import com.android.tools.build.bundletool.device.AdbServer;
 import com.android.tools.build.bundletool.flags.FlagParser;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidCommandException;
 import com.android.tools.build.bundletool.model.utils.SystemEnvironmentProvider;
 import com.android.tools.build.bundletool.model.utils.files.BufferedIo;
 import com.android.tools.build.bundletool.testing.FakeAdbServer;
 import com.android.tools.build.bundletool.testing.FakeDevice;
 import com.android.tools.build.bundletool.testing.FakeSystemEnvironmentProvider;
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.protobuf.util.JsonFormat;
 import java.io.IOException;
 import java.io.Reader;
@@ -61,6 +64,10 @@ public class GetDeviceSpecCommandTest {
   @Rule public TemporaryFolder tmp = new TemporaryFolder();
   private Path tmpDir;
   private static final String DEVICE_ID = "id1";
+  private static final int DEVICE_TIER = 1;
+  private static final ImmutableSet<String> DEVICE_GROUPS =
+      ImmutableSet.of("highRam", "googlePixel");
+  private static final String COUNTRY_SET = "latam";
 
   private SystemEnvironmentProvider systemEnvironmentProvider;
   private Path adbPath;
@@ -134,7 +141,13 @@ public class GetDeviceSpecCommandTest {
     GetDeviceSpecCommand commandViaFlags =
         GetDeviceSpecCommand.fromFlags(
             new FlagParser()
-                .parse("--adb=" + adbPath, "--device-id=" + DEVICE_ID, "--output=" + outputPath),
+                .parse(
+                    "--adb=" + adbPath,
+                    "--device-id=" + DEVICE_ID,
+                    "--output=" + outputPath,
+                    "--device-tier=" + DEVICE_TIER,
+                    "--device-groups=" + Joiner.on(",").join(DEVICE_GROUPS),
+                    "--country-set=" + COUNTRY_SET),
             systemEnvironmentProvider,
             fakeServerOneDevice(lDeviceWithLocales("en-US")));
 
@@ -144,6 +157,9 @@ public class GetDeviceSpecCommandTest {
             .setDeviceId(DEVICE_ID)
             .setOutputPath(outputPath)
             .setAdbServer(commandViaFlags.getAdbServer())
+            .setDeviceTier(DEVICE_TIER)
+            .setDeviceGroups(DEVICE_GROUPS)
+            .setCountrySet(COUNTRY_SET)
             .build();
 
     assertThat(commandViaFlags).isEqualTo(commandViaBuilder);
@@ -217,7 +233,7 @@ public class GetDeviceSpecCommandTest {
     // We set up a fake ADB server because the real one won't work on Forge.
     Throwable exception =
         assertThrows(
-            ValidationException.class,
+            InvalidCommandException.class,
             () ->
                 GetDeviceSpecCommand.builder()
                     .setAdbPath(adbPath)
@@ -244,7 +260,12 @@ public class GetDeviceSpecCommandTest {
   @Test
   public void oneDevice_noDeviceId_works() throws Exception {
     DeviceSpec deviceSpec =
-        mergeSpecs(sdkVersion(21), abis("x86_64", "x86"), locales("en-GB"), density(360));
+        mergeSpecs(
+            sdkVersion(21),
+            abis("x86_64", "x86"),
+            locales("en-GB"),
+            density(360),
+            sdkRuntimeSupported(/* supported= */ false));
 
     Path outputPath = tmp.getRoot().toPath().resolve("device.json");
     // We set up a fake ADB server because the real one won't work on Forge.
@@ -265,7 +286,13 @@ public class GetDeviceSpecCommandTest {
 
   @Test
   public void nonExistentParentDirectory_works() {
-    DeviceSpec deviceSpec = mergeSpecs(sdkVersion(21), density(480), abis("x86"), locales("en-US"));
+    DeviceSpec deviceSpec =
+        mergeSpecs(
+            sdkVersion(21),
+            density(480),
+            abis("x86"),
+            locales("en-US"),
+            sdkRuntimeSupported(/* supported= */ false));
 
     Path outputPath =
         tmp.getRoot().toPath().resolve("non-existent-parent-directory").resolve("device.json");
@@ -332,16 +359,6 @@ public class GetDeviceSpecCommandTest {
     GetDeviceSpecCommand.help();
   }
 
-  private static AdbServer fakeServerOneDevice(DeviceSpec deviceSpec) {
-    return new FakeAdbServer(
-        /* hasInitialDeviceList= */ true,
-        ImmutableList.of(FakeDevice.fromDeviceSpec("id", DeviceState.ONLINE, deviceSpec)));
-  }
-
-  private static AdbServer fakeServerNoDevices() {
-    return new FakeAdbServer(/* hasInitialDeviceList= */ true, /* devices= */ ImmutableList.of());
-  }
-
   @Test
   public void overwriteSet_overwritesFile() throws Exception {
     DeviceSpec deviceSpec = mergeSpecs(sdkVersion(21), density(480), abis("x86"), locales("en-US"));
@@ -373,5 +390,69 @@ public class GetDeviceSpecCommandTest {
 
     Throwable exception = assertThrows(IllegalArgumentException.class, () -> command.execute());
     assertThat(exception).hasMessageThat().contains("File '" + outputPath + "' already exists.");
+  }
+
+  @Test
+  public void countrySet_setInDeviceSpec_whenSpecified() throws Exception {
+    // Arrange
+    DeviceSpec deviceSpec = mergeSpecs(sdkVersion(21), density(480), abis("x86"), locales("en-US"));
+    Path outputPath = tmp.getRoot().toPath().resolve("device.json");
+    Files.createFile(outputPath);
+    GetDeviceSpecCommand command =
+        GetDeviceSpecCommand.builder()
+            .setAdbPath(adbPath)
+            .setAdbServer(fakeServerOneDevice(deviceSpec))
+            .setOutputPath(outputPath)
+            .setCountrySet("latam")
+            .setOverwriteOutput(true)
+            .build();
+
+    // Act
+    command.execute();
+
+    // Assert
+    try (Reader deviceSpecReader = BufferedIo.reader(outputPath)) {
+      DeviceSpec.Builder writtenSpecBuilder = DeviceSpec.newBuilder();
+      JsonFormat.parser().merge(deviceSpecReader, writtenSpecBuilder);
+      DeviceSpec writtenSpec = writtenSpecBuilder.build();
+      assertThat(writtenSpec.hasCountrySet()).isTrue();
+      assertThat(writtenSpec.getCountrySet().getValue()).isEqualTo("latam");
+    }
+  }
+
+  @Test
+  public void countrySet_notSetInDeviceSpec_whenNotSpecified() throws Exception {
+    // Arrange
+    DeviceSpec deviceSpec = mergeSpecs(sdkVersion(21), density(480), abis("x86"), locales("en-US"));
+    Path outputPath = tmp.getRoot().toPath().resolve("device.json");
+    Files.createFile(outputPath);
+    GetDeviceSpecCommand command =
+        GetDeviceSpecCommand.builder()
+            .setAdbPath(adbPath)
+            .setAdbServer(fakeServerOneDevice(deviceSpec))
+            .setOutputPath(outputPath)
+            .setOverwriteOutput(true)
+            .build();
+
+    // Act
+    command.execute();
+
+    // Assert
+    try (Reader deviceSpecReader = BufferedIo.reader(outputPath)) {
+      DeviceSpec.Builder writtenSpecBuilder = DeviceSpec.newBuilder();
+      JsonFormat.parser().merge(deviceSpecReader, writtenSpecBuilder);
+      DeviceSpec writtenSpec = writtenSpecBuilder.build();
+      assertThat(writtenSpec.hasCountrySet()).isFalse();
+    }
+  }
+
+  private static AdbServer fakeServerOneDevice(DeviceSpec deviceSpec) {
+    return new FakeAdbServer(
+        /* hasInitialDeviceList= */ true,
+        ImmutableList.of(FakeDevice.fromDeviceSpec("id", DeviceState.ONLINE, deviceSpec)));
+  }
+
+  private static AdbServer fakeServerNoDevices() {
+    return new FakeAdbServer(/* hasInitialDeviceList= */ true, /* devices= */ ImmutableList.of());
   }
 }

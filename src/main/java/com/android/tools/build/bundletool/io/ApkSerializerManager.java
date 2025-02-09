@@ -15,129 +15,243 @@
  */
 package com.android.tools.build.bundletool.io;
 
-import static com.android.tools.build.bundletool.io.ConcurrencyUtils.waitForAll;
+import static com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode.SYSTEM;
+import static com.android.tools.build.bundletool.model.AndroidManifest.MODULE_TYPE_AI_VALUE;
+import static com.android.tools.build.bundletool.model.AndroidManifest.MODULE_TYPE_ASSET_VALUE;
+import static com.android.tools.build.bundletool.model.BundleModule.DEX_DIRECTORY;
+import static com.android.tools.build.bundletool.model.utils.CollectorUtils.groupingByDeterministic;
 import static com.android.tools.build.bundletool.model.utils.CollectorUtils.groupingBySortedKeys;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Predicates.alwaysTrue;
+import static com.google.common.collect.ImmutableBiMap.toImmutableBiMap;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.util.function.Function.identity;
-import static java.util.stream.Collectors.collectingAndThen;
-import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.mapping;
 
 import com.android.bundle.Commands.ApkDescription;
 import com.android.bundle.Commands.ApkSet;
 import com.android.bundle.Commands.AssetModuleMetadata;
+import com.android.bundle.Commands.AssetModuleType;
+import com.android.bundle.Commands.AssetModulesInfo;
 import com.android.bundle.Commands.AssetSliceSet;
 import com.android.bundle.Commands.BuildApksResult;
+import com.android.bundle.Commands.BuildSdkApksResult;
+import com.android.bundle.Commands.DefaultTargetingValue;
 import com.android.bundle.Commands.DeliveryType;
 import com.android.bundle.Commands.InstantMetadata;
+import com.android.bundle.Commands.LocalTestingInfo;
+import com.android.bundle.Commands.PermanentlyFusedModule;
+import com.android.bundle.Commands.SdkVersionInformation;
 import com.android.bundle.Commands.Variant;
+import com.android.bundle.Commands.VariantProperties;
+import com.android.bundle.Config.AssetModulesConfig;
+import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Config.Bundletool;
+import com.android.bundle.Config.SplitDimension;
+import com.android.bundle.Config.SuffixStripping;
 import com.android.bundle.Devices.DeviceSpec;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.android.tools.build.bundletool.commands.BuildApksCommand.ApkBuildMode;
+import com.android.tools.build.bundletool.commands.BuildApksModule.ApkSigningConfigProvider;
+import com.android.tools.build.bundletool.commands.BuildApksModule.FirstVariantNumber;
 import com.android.tools.build.bundletool.device.ApkMatcher;
-import com.android.tools.build.bundletool.io.ApkSetBuilderFactory.ApkSetBuilder;
 import com.android.tools.build.bundletool.model.AndroidManifest;
-import com.android.tools.build.bundletool.model.ApkListener;
 import com.android.tools.build.bundletool.model.ApkModifier;
 import com.android.tools.build.bundletool.model.ApkModifier.ApkDescription.ApkType;
 import com.android.tools.build.bundletool.model.AppBundle;
+import com.android.tools.build.bundletool.model.Bundle;
 import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.BundleModuleName;
 import com.android.tools.build.bundletool.model.GeneratedApks;
 import com.android.tools.build.bundletool.model.GeneratedAssetSlices;
 import com.android.tools.build.bundletool.model.ManifestDeliveryElement;
+import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
+import com.android.tools.build.bundletool.model.OptimizationDimension;
+import com.android.tools.build.bundletool.model.SdkBundle;
+import com.android.tools.build.bundletool.model.SigningConfigurationProvider;
 import com.android.tools.build.bundletool.model.VariantKey;
+import com.android.tools.build.bundletool.model.ZipPath;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.optimizations.ApkOptimizations;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
-import com.google.common.util.concurrent.ListeningExecutorService;
-import java.util.Collection;
+import com.google.protobuf.Int32Value;
+import com.google.protobuf.StringValue;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Path;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
+import javax.inject.Inject;
 
 /** Creates parts of table of contents and writes out APKs. */
 public class ApkSerializerManager {
-
-  private final ListeningExecutorService executorService;
-  private final ApkListener apkListener;
+  private final Bundle bundle;
   private final ApkModifier apkModifier;
-  private final int firstVariantNumber;
-  private final AppBundle appBundle;
-  private final ApkSetBuilder apkSetBuilder;
 
+  private final int firstVariantNumber;
+  private final ApkBuildMode apkBuildMode;
+
+  private final ApkPathManager apkPathManager;
+  private final ApkOptimizations apkOptimizations;
+  private final ApkSerializer apkSerializer;
+  private final Optional<SigningConfigurationProvider> signingConfigProvider;
+
+  @Inject
   public ApkSerializerManager(
-      AppBundle appBundle,
-      ApkSetBuilder apkSetBuilder,
-      ListeningExecutorService executorService,
-      ApkListener apkListener,
-      ApkModifier apkModifier,
-      int firstVariantNumber) {
-    this.appBundle = appBundle;
-    this.apkSetBuilder = apkSetBuilder;
-    this.executorService = executorService;
-    this.apkListener = apkListener;
-    this.apkModifier = apkModifier;
-    this.firstVariantNumber = firstVariantNumber;
+      Bundle bundle,
+      Optional<ApkModifier> apkModifier,
+      @FirstVariantNumber Optional<Integer> firstVariantNumber,
+      ApkBuildMode apkBuildMode,
+      ApkPathManager apkPathManager,
+      ApkOptimizations apkOptimizations,
+      ApkSerializer apkSerializer,
+      @ApkSigningConfigProvider Optional<SigningConfigurationProvider> signingConfigProvider) {
+    this.bundle = bundle;
+    this.apkModifier = apkModifier.orElse(ApkModifier.NO_OP);
+    this.firstVariantNumber = firstVariantNumber.orElse(0);
+    this.apkBuildMode = apkBuildMode;
+    this.apkPathManager = apkPathManager;
+    this.apkOptimizations = apkOptimizations;
+    this.apkSerializer = apkSerializer;
+    this.signingConfigProvider = signingConfigProvider;
   }
 
-  public void populateApkSetBuilder(
+  /** Serialize App Bundle APKs. */
+  public BuildApksResult serializeApkSet(
+      ApkSetWriter apkSetWriter,
       GeneratedApks generatedApks,
       GeneratedAssetSlices generatedAssetSlices,
-      ApkBuildMode apkBuildMode,
-      Optional<DeviceSpec> deviceSpec) {
-    ImmutableList<Variant> allVariantsWithTargeting =
-        serializeApks(generatedApks, apkBuildMode, deviceSpec);
-    ImmutableList<AssetSliceSet> allAssetSliceSets =
-        serializeAssetSlices(generatedAssetSlices, apkBuildMode, deviceSpec);
+      Optional<DeviceSpec> deviceSpec,
+      LocalTestingInfo localTestingInfo,
+      ImmutableSet<BundleModuleName> permanentlyFusedModules) {
+    try {
+      BuildApksResult toc =
+          serializeApkSetContent(
+              apkSetWriter.getSplitsDirectory(),
+              generatedApks,
+              generatedAssetSlices,
+              deviceSpec,
+              localTestingInfo,
+              permanentlyFusedModules);
+      apkSetWriter.writeApkSet(toc);
+      return toc;
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
 
+  /** Serialize App Bundle APKs without including TOC in the output archive. */
+  public void serializeApkSetWithoutToc(
+      ApkSetWriter apkSetWriter,
+      GeneratedApks generatedApks,
+      GeneratedAssetSlices generatedAssetSlices,
+      Optional<DeviceSpec> deviceSpec,
+      LocalTestingInfo localTestingInfo,
+      ImmutableSet<BundleModuleName> permanentlyFusedModules) {
+    try {
+      BuildApksResult toc =
+          serializeApkSetContent(
+              apkSetWriter.getSplitsDirectory(),
+              generatedApks,
+              generatedAssetSlices,
+              deviceSpec,
+              localTestingInfo,
+              permanentlyFusedModules);
+      apkSetWriter.writeApkSetWithoutToc(toc);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  /** Serialize SDK Bundle APKs. */
+  public void serializeSdkApkSet(ApkSetWriter apkSetWriter, GeneratedApks generatedApks) {
+    try {
+      BuildSdkApksResult toc =
+          serializeSdkApkSetContent(apkSetWriter.getSplitsDirectory(), generatedApks);
+      apkSetWriter.writeApkSet(toc);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private BuildApksResult serializeApkSetContent(
+      Path outputDirectory,
+      GeneratedApks generatedApks,
+      GeneratedAssetSlices generatedAssetSlices,
+      Optional<DeviceSpec> deviceSpec,
+      LocalTestingInfo localTestingInfo,
+      ImmutableSet<BundleModuleName> permanentlyFusedModules) {
+    ImmutableList<Variant> allVariantsWithTargeting =
+        serializeApks(outputDirectory, generatedApks, deviceSpec);
+    ImmutableList<AssetSliceSet> allAssetSliceSets =
+        serializeAssetSlices(outputDirectory, generatedAssetSlices, deviceSpec);
     // Finalize the output archive.
-    apkSetBuilder.setTableOfContentsFile(
+    BuildApksResult.Builder apksResult =
         BuildApksResult.newBuilder()
+            .setPackageName(bundle.getPackageName())
             .addAllVariant(allVariantsWithTargeting)
             .setBundletool(
                 Bundletool.newBuilder()
                     .setVersion(BundleToolVersion.getCurrentVersion().toString()))
             .addAllAssetSliceSet(allAssetSliceSets)
-            .build());
+            .setLocalTestingInfo(localTestingInfo);
+    BundleConfig bundleConfig = ((AppBundle) bundle).getBundleConfig();
+    if (bundleConfig.hasAssetModulesConfig()) {
+      apksResult.setAssetModulesInfo(getAssetModulesInfo(bundleConfig.getAssetModulesConfig()));
+    }
+    apksResult.addAllDefaultTargetingValue(getDefaultTargetingValues(bundleConfig));
+    permanentlyFusedModules.forEach(
+        moduleName ->
+            apksResult.addPermanentlyFusedModules(
+                PermanentlyFusedModule.newBuilder().setName(moduleName.getName())));
+    ((AppBundle) bundle).getDeviceGroupConfig().ifPresent(apksResult::setDeviceGroupConfig);
+    return apksResult.build();
+  }
+
+  private BuildSdkApksResult serializeSdkApkSetContent(
+      Path outputDirectory, GeneratedApks generatedApks) {
+    ImmutableList<Variant> allVariantsWithTargeting =
+        serializeApks(outputDirectory, generatedApks, /* deviceSpec= */ Optional.empty());
+    SdkBundle sdkBundle = (SdkBundle) bundle;
+    checkState(sdkBundle.getVersionCode().isPresent(), "Missing version code for SDK Bundle.");
+    return BuildSdkApksResult.newBuilder()
+        .setPackageName(sdkBundle.getPackageName())
+        .addAllVariant(allVariantsWithTargeting)
+        .setBundletool(
+            Bundletool.newBuilder().setVersion(BundleToolVersion.getCurrentVersion().toString()))
+        .setVersion(
+            SdkVersionInformation.newBuilder()
+                .setVersionCode(sdkBundle.getVersionCode().get())
+                .setMajor(sdkBundle.getMajorVersion())
+                .setMinor(sdkBundle.getMinorVersion())
+                .setPatch(sdkBundle.getPatchVersion())
+                .build())
+        .build();
   }
 
   @VisibleForTesting
-  ImmutableList<Variant> serializeApksForDevice(
-      GeneratedApks generatedApks, DeviceSpec deviceSpec, ApkBuildMode apkBuildMode) {
-    return serializeApks(generatedApks, apkBuildMode, Optional.of(deviceSpec));
-  }
-
-  @VisibleForTesting
-  ImmutableList<Variant> serializeApks(GeneratedApks generatedApks) {
-    return serializeApks(generatedApks, ApkBuildMode.DEFAULT);
-  }
-
-  @VisibleForTesting
-  ImmutableList<Variant> serializeApks(GeneratedApks generatedApks, ApkBuildMode apkBuildMode) {
-    return serializeApks(generatedApks, apkBuildMode, Optional.empty());
-  }
-
-  private ImmutableList<Variant> serializeApks(
-      GeneratedApks generatedApks, ApkBuildMode apkBuildMode, Optional<DeviceSpec> deviceSpec) {
+  ImmutableList<Variant> serializeApks(
+      Path outputDirectory, GeneratedApks generatedApks, Optional<DeviceSpec> deviceSpec) {
     validateInput(generatedApks, apkBuildMode);
 
     // Running with system APK mode generates a fused APK and additional unmatched language splits.
     // To avoid filtering of unmatched language splits we skip device filtering for system mode.
     Predicate<ModuleSplit> deviceFilter =
-        deviceSpec.isPresent() && !apkBuildMode.isAnySystemMode()
-            ? new ApkMatcher(deviceSpec.get())::matchesModuleSplitByTargeting
+        deviceSpec.isPresent() && !apkBuildMode.equals(SYSTEM)
+            ? new ApkMatcher(addDefaultsIfNecessary(deviceSpec.get()))
+                ::matchesModuleSplitByTargeting
             : alwaysTrue();
 
     ImmutableListMultimap<VariantKey, ModuleSplit> splitsByVariant =
@@ -152,11 +266,9 @@ public class ApkSerializerManager {
     // 1. Remove APKs not matching the device spec.
     // 2. Modify the APKs based on the ApkModifier.
     // 3. Serialize all APKs in parallel.
-    ApkSerializer apkSerializer = new ApkSerializer(apkListener, apkBuildMode);
 
     // Modifies the APK using APK modifier, then returns a map by extracting the variant
     // of APK first and later clearing out its variant targeting.
-
     ImmutableListMultimap<VariantKey, ModuleSplit> finalSplitsByVariant =
         splitsByVariant.entries().stream()
             .filter(keyModuleSplitEntry -> deviceFilter.test(keyModuleSplitEntry.getValue()))
@@ -168,21 +280,15 @@ public class ApkSerializerManager {
                             modifyApk(
                                 entry.getValue(), variantNumberByVariantKey.get(entry.getKey())))));
 
-    checkState(!finalSplitsByVariant.isEmpty(), "Internal error: No variants were generated.");
-
     // After variant targeting of APKs are cleared, there might be duplicate APKs
     // which are removed and the distinct APKs are then serialized in parallel.
-    // Note: Only serializing compressed system APK produces multiple ApkDescriptions,
-    // i.e compressed and stub APK descriptions.
-    ImmutableMap<ModuleSplit, ImmutableList<ApkDescription>> apkDescriptionBySplit =
+    ImmutableBiMap<ZipPath, ModuleSplit> splitsByRelativePath =
         finalSplitsByVariant.values().stream()
             .distinct()
-            .collect(
-                collectingAndThen(
-                    toImmutableMap(
-                        identity(),
-                        split -> executorService.submit(() -> apkSerializer.serialize(split))),
-                    ConcurrencyUtils::waitForAll));
+            .collect(toImmutableBiMap(apkPathManager::getApkPath, identity()));
+
+    ImmutableMap<ZipPath, ApkDescription> apkDescriptionsByRelativePath =
+        apkSerializer.serialize(outputDirectory, splitsByRelativePath);
 
     // Build the result proto.
     ImmutableList.Builder<Variant> variants = ImmutableList.builder();
@@ -190,7 +296,8 @@ public class ApkSerializerManager {
       Variant.Builder variant =
           Variant.newBuilder()
               .setVariantNumber(variantNumberByVariantKey.get(variantKey))
-              .setTargeting(variantKey.getVariantTargeting());
+              .setTargeting(variantKey.getVariantTargeting())
+              .setVariantProperties(getVariantProperties(finalSplitsByVariant.get(variantKey)));
 
       Multimap<BundleModuleName, ModuleSplit> splitsByModuleName =
           finalSplitsByVariant.get(variantKey).stream()
@@ -199,10 +306,18 @@ public class ApkSerializerManager {
       for (BundleModuleName moduleName : splitsByModuleName.keySet()) {
         variant.addApkSet(
             ApkSet.newBuilder()
-                .setModuleMetadata(appBundle.getModule(moduleName).getModuleMetadata())
+                .setModuleMetadata(
+                    bundle
+                        .getModule(moduleName)
+                        .getModuleMetadata(
+                            variant
+                                .getTargeting()
+                                .getSdkRuntimeTargeting()
+                                .getRequiresSdkRuntime()))
                 .addAllApkDescription(
                     splitsByModuleName.get(moduleName).stream()
-                        .flatMap(split -> apkDescriptionBySplit.get(split).stream())
+                        .map(split -> splitsByRelativePath.inverse().get(split))
+                        .map(apkDescriptionsByRelativePath::get)
                         .collect(toImmutableList())));
       }
       variants.add(variant.build());
@@ -213,53 +328,85 @@ public class ApkSerializerManager {
 
   @VisibleForTesting
   ImmutableList<AssetSliceSet> serializeAssetSlices(
+      Path outputDirectory,
       GeneratedAssetSlices generatedAssetSlices,
-      ApkBuildMode apkBuildMode,
       Optional<DeviceSpec> deviceSpec) {
 
     Predicate<ModuleSplit> deviceFilter =
         deviceSpec.isPresent()
-            ? new ApkMatcher(deviceSpec.get())::matchesModuleSplitByTargeting
+            ? new ApkMatcher(addDefaultsIfNecessary(deviceSpec.get()))
+                ::matchesModuleSplitByTargeting
             : alwaysTrue();
 
-    ApkSerializer apkSerializer = new ApkSerializer(apkListener, apkBuildMode);
-
-    ImmutableListMultimap<BundleModuleName, ApkDescription> generatedSlicesByModule =
+    ImmutableMap<ZipPath, ModuleSplit> assetSplitsByRelativePath =
         generatedAssetSlices.getAssetSlices().stream()
             .filter(deviceFilter)
+            .collect(toImmutableMap(apkPathManager::getApkPath, identity()));
+
+    ImmutableMap<ZipPath, ApkDescription> apkDescriptionsByRelativePath =
+        apkSerializer.serialize(outputDirectory, assetSplitsByRelativePath);
+
+    ImmutableMap<BundleModuleName, ImmutableList<ApkDescription>> serializedApksByModuleName =
+        assetSplitsByRelativePath.keySet().stream()
             .collect(
-                groupingBy(
-                    ModuleSplit::getModuleName,
-                    mapping(
-                        assetSlice ->
-                            executorService.submit(() -> apkSerializer.serialize(assetSlice)),
-                        toImmutableList())))
-            .entrySet()
-            .stream()
-            .collect(
-                ImmutableListMultimap.flatteningToImmutableListMultimap(
-                    Entry::getKey,
-                    entry -> waitForAll(entry.getValue()).stream().flatMap(Collection::stream)));
-    return generatedSlicesByModule.asMap().entrySet().stream()
+                groupingByDeterministic(
+                    relativePath -> assetSplitsByRelativePath.get(relativePath).getModuleName(),
+                    mapping(apkDescriptionsByRelativePath::get, toImmutableList())));
+
+    return serializedApksByModuleName.entrySet().stream()
         .map(
             entry ->
                 AssetSliceSet.newBuilder()
                     .setAssetModuleMetadata(
-                        getAssetModuleMetadata(appBundle.getModule(entry.getKey())))
+                        getAssetModuleMetadata(bundle.getModule(entry.getKey())))
                     .addAllApkDescription(entry.getValue())
                     .build())
         .collect(toImmutableList());
+  }
+
+  private VariantProperties getVariantProperties(ImmutableList<ModuleSplit> modules) {
+    ImmutableList<ModuleEntry> nativeLibEntries =
+        modules.stream()
+            .filter(module -> module.getNativeConfig().isPresent())
+            .flatMap(
+                module ->
+                    module.getNativeConfig().get().getDirectoryList().stream()
+                        .flatMap(dir -> module.findEntriesUnderPath(dir.getPath())))
+            .collect(toImmutableList());
+    ImmutableList<ModuleEntry> dexEntries =
+        modules.stream()
+            .flatMap(module -> module.getEntries().stream())
+            .filter(entry -> entry.getPath().startsWith(DEX_DIRECTORY))
+            .collect(toImmutableList());
+    return VariantProperties.newBuilder()
+        .setUncompressedDex(
+            !dexEntries.isEmpty()
+                && dexEntries.stream().allMatch(ModuleEntry::getForceUncompressed))
+        .setUncompressedNativeLibraries(
+            !nativeLibEntries.isEmpty()
+                && nativeLibEntries.stream().allMatch(ModuleEntry::getForceUncompressed))
+        .setSparseEncoding(modules.stream().allMatch(ModuleSplit::getSparseEncoding))
+        .build();
   }
 
   private AssetModuleMetadata getAssetModuleMetadata(BundleModule module) {
     AndroidManifest manifest = module.getAndroidManifest();
     AssetModuleMetadata.Builder metadataBuilder =
         AssetModuleMetadata.newBuilder().setName(module.getName().getName());
+    metadataBuilder.setAssetModuleType(
+        manifest
+            .getOptionalModuleTypeAttributeValue()
+            .map(ApkSerializerManager::getAssetModuleType)
+            .orElse(AssetModuleType.UNKNOWN_ASSET_TYPE));
     Optional<ManifestDeliveryElement> persistentDelivery = manifest.getManifestDeliveryElement();
     metadataBuilder.setDeliveryType(
         persistentDelivery
             .map(delivery -> getDeliveryType(delivery))
             .orElse(DeliveryType.INSTALL_TIME));
+    persistentDelivery
+        .map(ManifestDeliveryElement::getAssetModuleConditions)
+        .ifPresent(metadataBuilder::setTargeting);
+
     // The module is instant if either the dist:instant attribute is true or the
     // dist:instant-delivery element is present.
     boolean isInstantModule = module.isInstantModule();
@@ -281,6 +428,17 @@ public class ApkSerializerManager {
     return metadataBuilder.build();
   }
 
+  private static AssetModuleType getAssetModuleType(String value) {
+    switch (value) {
+      case MODULE_TYPE_ASSET_VALUE:
+        return AssetModuleType.DEFAULT_ASSET_TYPE;
+      case MODULE_TYPE_AI_VALUE:
+        return AssetModuleType.AI_PACK_TYPE;
+      default:
+        return AssetModuleType.UNKNOWN_ASSET_TYPE;
+    }
+  }
+
   private static void validateInput(GeneratedApks generatedApks, ApkBuildMode apkBuildMode) {
     switch (apkBuildMode) {
       case DEFAULT:
@@ -292,14 +450,15 @@ public class ApkSerializerManager {
         checkArgument(
             generatedApks.getSplitApks().isEmpty()
                 && generatedApks.getInstantApks().isEmpty()
+                && generatedApks.getArchivedApks().isEmpty()
                 && generatedApks.getSystemApks().isEmpty(),
             "Internal error: For universal APK expecting only standalone APKs.");
         break;
-      case SYSTEM_COMPRESSED:
       case SYSTEM:
         checkArgument(
             generatedApks.getSplitApks().isEmpty()
                 && generatedApks.getInstantApks().isEmpty()
+                && generatedApks.getArchivedApks().isEmpty()
                 && generatedApks.getStandaloneApks().isEmpty(),
             "Internal error: For system mode expecting only system APKs.");
         break;
@@ -318,6 +477,14 @@ public class ApkSerializerManager {
         checkArgument(
             generatedApks.getSplitApks().isEmpty() && generatedApks.getStandaloneApks().isEmpty(),
             "Internal error: Persistent APKs not expected with instant mode.");
+        break;
+      case ARCHIVE:
+        checkArgument(
+            generatedApks.getSplitApks().isEmpty()
+                && generatedApks.getInstantApks().isEmpty()
+                && generatedApks.getStandaloneApks().isEmpty()
+                && generatedApks.getSystemApks().isEmpty(),
+            "Internal error: For archive mode expecting only archived APKs.");
         break;
     }
   }
@@ -341,10 +508,41 @@ public class ApkSerializerManager {
         .build();
   }
 
-  private static ModuleSplit clearVariantTargeting(ModuleSplit moduleSplit) {
-    return moduleSplit.toBuilder()
-        .setVariantTargeting(VariantTargeting.getDefaultInstance())
+  private ModuleSplit clearVariantTargeting(ModuleSplit moduleSplit) {
+    VariantTargeting.Builder variantTargeting = VariantTargeting.newBuilder();
+    boolean hasRestrictedV3SigningConfig =
+        signingConfigProvider
+            .map(SigningConfigurationProvider::hasRestrictedV3SigningConfig)
+            .orElse(false);
+    // If the signing config includes signing with rotated keys using V3 signature scheme, and it is
+    // restricted to specific Android SDK versions, then the de-duplication of generated splits must
+    // account for variant SDK version targeting when comparing splits.
+    if (hasRestrictedV3SigningConfig
+        && moduleSplit.getVariantTargeting().hasSdkVersionTargeting()) {
+      variantTargeting.setSdkVersionTargeting(
+          moduleSplit.getVariantTargeting().getSdkVersionTargeting());
+    }
+    return moduleSplit.toBuilder().setVariantTargeting(variantTargeting.build()).build();
+  }
+
+  private static AssetModulesInfo getAssetModulesInfo(AssetModulesConfig assetModulesConfig) {
+    return AssetModulesInfo.newBuilder()
+        .addAllAppVersion(assetModulesConfig.getAppVersionList())
+        .setAssetVersionTag(assetModulesConfig.getAssetVersionTag())
         .build();
+  }
+
+  private static ImmutableList<DefaultTargetingValue> getDefaultTargetingValues(
+      BundleConfig bundleConfig) {
+    return bundleConfig.getOptimizations().getSplitsConfig().getSplitDimensionList().stream()
+        .filter(SplitDimension::hasSuffixStripping)
+        .map(
+            splitDimension ->
+                DefaultTargetingValue.newBuilder()
+                    .setDimension(splitDimension.getValue())
+                    .setDefaultValue(splitDimension.getSuffixStripping().getDefaultSuffix())
+                    .build())
+        .collect(toImmutableList());
   }
 
   private static DeliveryType getDeliveryType(ManifestDeliveryElement deliveryElement) {
@@ -357,50 +555,85 @@ public class ApkSerializerManager {
     return DeliveryType.INSTALL_TIME;
   }
 
-  private final class ApkSerializer {
-    private final ApkListener apkListener;
-    private final ApkBuildMode apkBuildMode;
+  private DeviceSpec addDefaultsIfNecessary(DeviceSpec deviceSpec) {
+    DeviceSpec result = deviceSpec;
+    result = addDefaultCountrySetIfNecessary(result);
+    result = addDefaultDeviceTierIfNecessary(result);
+    result = addDefaultDeviceGroupIfNecessary(result);
+    return result;
+  }
 
-    public ApkSerializer(ApkListener apkListener, ApkBuildMode apkBuildMode) {
-      this.apkListener = apkListener;
-      this.apkBuildMode = apkBuildMode;
+  /**
+   * Adds a default device tier to the given {@link DeviceSpec} if it has none.
+   *
+   * <p>The default tier is taken from the optimization settings in the {@link
+   * com.android.bundle.Config.BundleConfig}. If suffix stripping is enabled but the default tier is
+   * unspecified, it defaults to 0.
+   */
+  private DeviceSpec addDefaultDeviceTierIfNecessary(DeviceSpec deviceSpec) {
+    if (deviceSpec.hasDeviceTier()) {
+      return deviceSpec;
     }
-
-    public ImmutableList<ApkDescription> serialize(ModuleSplit split) {
-      ImmutableList<ApkDescription> apkDescriptions;
-      switch (split.getSplitType()) {
-        case INSTANT:
-          apkDescriptions = ImmutableList.of(apkSetBuilder.addInstantApk(split));
-          break;
-        case SPLIT:
-          apkDescriptions = ImmutableList.of(apkSetBuilder.addSplitApk(split));
-          break;
-        case SYSTEM:
-          if (split.isBaseModuleSplit() && split.isMasterSplit()) {
-            apkDescriptions =
-                apkBuildMode.equals(ApkBuildMode.SYSTEM_COMPRESSED)
-                    ? apkSetBuilder.addCompressedSystemApks(split)
-                    : ImmutableList.of(apkSetBuilder.addSystemApk(split));
-          } else {
-            apkDescriptions = ImmutableList.of(apkSetBuilder.addSplitApk(split));
-          }
-          break;
-        case STANDALONE:
-          apkDescriptions =
-              apkBuildMode.equals(ApkBuildMode.UNIVERSAL)
-                  ? ImmutableList.of(apkSetBuilder.addStandaloneUniversalApk(split))
-                  : ImmutableList.of(apkSetBuilder.addStandaloneApk(split));
-          break;
-        case ASSET_SLICE:
-          apkDescriptions = ImmutableList.of(apkSetBuilder.addAssetSliceApk(split));
-          break;
-        default:
-          throw new IllegalStateException("Unexpected splitType: " + split.getSplitType());
-      }
-
-      // Notify apk listener.
-      apkDescriptions.forEach(apkListener::onApkFinalized);
-      return apkDescriptions;
+    Optional<SuffixStripping> deviceTierSuffix =
+        Optional.ofNullable(
+            apkOptimizations.getSuffixStrippings().get(OptimizationDimension.DEVICE_TIER));
+    if (!deviceTierSuffix.isPresent()) {
+      return deviceSpec;
     }
+    return deviceSpec.toBuilder()
+        .setDeviceTier(
+            Int32Value.of(
+                deviceTierSuffix
+                    .map(
+                        suffix ->
+                            // Use the standard default value 0 if the app doesn't specify an
+                            // explicit default.
+                            suffix.getDefaultSuffix().isEmpty()
+                                ? 0
+                                : Integer.parseInt(suffix.getDefaultSuffix()))
+                    .orElse(0)))
+        .build();
+  }
+
+  /**
+   * Adds a default device group to the given {@link DeviceSpec} if it has none.
+   *
+   * <p>The default device group is taken from the optimization settings in the {@link
+   * com.android.bundle.Config.BundleConfig}.
+   */
+  private DeviceSpec addDefaultDeviceGroupIfNecessary(DeviceSpec deviceSpec) {
+    if (deviceSpec.getDeviceGroupsCount() > 0) {
+      return deviceSpec;
+    }
+    Optional<String> defaultDeviceGroup =
+        Optional.ofNullable(
+                apkOptimizations.getSuffixStrippings().get(OptimizationDimension.DEVICE_GROUP))
+            .map(SuffixStripping::getDefaultSuffix);
+    if (!defaultDeviceGroup.isPresent()) {
+      return deviceSpec;
+    }
+    return deviceSpec.toBuilder().addDeviceGroups(defaultDeviceGroup.get()).build();
+  }
+
+  /**
+   * Adds a default country set to the given {@link DeviceSpec} if it has none.
+   *
+   * <p>The default country set is taken from the optimization settings in the {@link
+   * com.android.bundle.Config.BundleConfig}.
+   */
+  private DeviceSpec addDefaultCountrySetIfNecessary(DeviceSpec deviceSpec) {
+    if (deviceSpec.hasCountrySet()) {
+      return deviceSpec;
+    }
+    Optional<SuffixStripping> countrySetSuffix =
+        Optional.ofNullable(
+            apkOptimizations.getSuffixStrippings().get(OptimizationDimension.COUNTRY_SET));
+    if (!countrySetSuffix.isPresent()) {
+      return deviceSpec;
+    }
+    return deviceSpec.toBuilder()
+        .setCountrySet(
+            StringValue.of(countrySetSuffix.map(SuffixStripping::getDefaultSuffix).orElse("")))
+        .build();
   }
 }

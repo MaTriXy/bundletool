@@ -18,7 +18,9 @@ package com.android.tools.build.bundletool.splitters;
 
 import static com.android.tools.build.bundletool.model.ManifestMutator.withExtractNativeLibs;
 import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_M_API_VERSION;
+import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_N_API_VERSION;
 import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_P_API_VERSION;
+import static com.android.tools.build.bundletool.splitters.NativeLibrariesHelper.mayHaveNativeActivities;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
@@ -26,7 +28,6 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import com.android.bundle.Files.TargetedNativeDirectory;
 import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ModuleSplit;
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -37,11 +38,6 @@ import java.util.List;
 public final class NativeLibrariesCompressionSplitter implements ModuleSplitSplitter {
 
   private final ApkGenerationConfiguration apkGenerationConfiguration;
-
-  @VisibleForTesting
-  NativeLibrariesCompressionSplitter() {
-    this(ApkGenerationConfiguration.getDefaultInstance());
-  }
 
   public NativeLibrariesCompressionSplitter(ApkGenerationConfiguration apkGenerationConfiguration) {
     this.apkGenerationConfiguration = apkGenerationConfiguration;
@@ -67,37 +63,54 @@ public final class NativeLibrariesCompressionSplitter implements ModuleSplitSpli
         moduleSplit.getNativeConfig().get().getDirectoryList();
 
     ImmutableSet<ModuleEntry> libraryEntries =
-        allTargetedDirectories
-            .stream()
+        allTargetedDirectories.stream()
             .flatMap(directory -> moduleSplit.findEntriesUnderPath(directory.getPath()))
             .collect(toImmutableSet());
 
-    // If persistent app is not installable on external storage, only the split APKs targeting
-    // devices above Android M should be uncompressed. If the persistent app is installable on
-    // external storage only split APKs targeting device above Android P should be uncompressed (as
-    // uncompressed native libraries crashes with ASEC external storage and support for ASEC
-    // external storage is removed in Android P). Instant apps always support uncompressed native
-    // libraries (even on Android L), because they are not always executed by the Android platform.
-    boolean shouldCompress =
-        !apkGenerationConfiguration.isForInstantAppVariants()
-            && ((!apkGenerationConfiguration.isInstallableOnExternalStorage()
-                    && targetsPreM(moduleSplit))
-                || (apkGenerationConfiguration.isInstallableOnExternalStorage()
-                    && targetsPreP(moduleSplit)));
-
+    boolean forceUncompressed = supportUncompressedNativeLibs(moduleSplit);
     return ImmutableList.of(
         createModuleSplit(
             moduleSplit,
-            mergeAndSetCompression(libraryEntries, moduleSplit, shouldCompress),
-            /* extractNativeLibs= */ shouldCompress));
+            mergeAndSetCompression(libraryEntries, moduleSplit, forceUncompressed),
+            /* extractNativeLibs= */ !forceUncompressed));
   }
 
-  private static boolean targetsPreM(ModuleSplit moduleSplit) {
-    return getSdkVersion(moduleSplit) < ANDROID_M_API_VERSION;
+  private boolean supportUncompressedNativeLibs(ModuleSplit moduleSplit) {
+    // If uncompressed native libraries are disabled for bundle we should compress them for all
+    // variants.
+    if (!apkGenerationConfiguration.getEnableUncompressedNativeLibraries()) {
+      return false;
+    }
+    // Instant apps support uncompressed native libs since Android L.
+    if (apkGenerationConfiguration.isForInstantAppVariants()) {
+      return true;
+    }
+    // Persistent apps target at least Android P support uncompressed native libraries without any
+    // restrictions.
+    if (targetsAtLeast(ANDROID_P_API_VERSION, moduleSplit)) {
+      return true;
+    }
+
+    // Persistent apps target Android N+ can use uncompressed native libraries in case they are
+    // are not installable on external storage as uncompressed native libraries crash with ASEC
+    // external storage and support for ASEC external storage is removed in Android P.
+    if (targetsAtLeast(ANDROID_N_API_VERSION, moduleSplit)) {
+      return !apkGenerationConfiguration.isInstallableOnExternalStorage();
+    }
+
+    // Persistent apps with uncompressed libraries are supported on Android M if they are
+    // not installable on external storage and do not use native activities because native
+    // activities with uncompressed native libs crash on Android M b/145808311.
+    if (targetsAtLeast(ANDROID_M_API_VERSION, moduleSplit)) {
+      return !apkGenerationConfiguration.isInstallableOnExternalStorage()
+          && !mayHaveNativeActivities(moduleSplit);
+    }
+
+    return false;
   }
 
-  private static boolean targetsPreP(ModuleSplit moduleSplit) {
-    return getSdkVersion(moduleSplit) < ANDROID_P_API_VERSION;
+  private static boolean targetsAtLeast(int version, ModuleSplit moduleSplit) {
+    return getSdkVersion(moduleSplit) >= version;
   }
 
   private static int getSdkVersion(ModuleSplit moduleSplit) {
@@ -108,20 +121,21 @@ public final class NativeLibrariesCompressionSplitter implements ModuleSplitSpli
   }
 
   private ImmutableList<ModuleEntry> mergeAndSetCompression(
-      ImmutableSet<ModuleEntry> libraryEntries, ModuleSplit moduleSplit, boolean shouldCompress) {
+      ImmutableSet<ModuleEntry> libraryEntries,
+      ModuleSplit moduleSplit,
+      boolean forceUncompressed) {
 
     ImmutableSet<ModuleEntry> nonLibraryEntries =
-        moduleSplit
-            .getEntries()
-            .stream()
+        moduleSplit.getEntries().stream()
             .filter(entry -> !libraryEntries.contains(entry))
             .collect(toImmutableSet());
 
     return ImmutableList.<ModuleEntry>builder()
         .addAll(
-            libraryEntries
-                .stream()
-                .map(moduleEntry -> moduleEntry.setCompression(shouldCompress))
+            libraryEntries.stream()
+                .map(
+                    moduleEntry ->
+                        moduleEntry.toBuilder().setForceUncompressed(forceUncompressed).build())
                 .collect(toImmutableList()))
         .addAll(nonLibraryEntries)
         .build();
@@ -131,8 +145,7 @@ public final class NativeLibrariesCompressionSplitter implements ModuleSplitSpli
       ModuleSplit moduleSplit,
       ImmutableList<ModuleEntry> moduleEntries,
       boolean extractNativeLibs) {
-    return moduleSplit
-        .toBuilder()
+    return moduleSplit.toBuilder()
         .addMasterManifestMutator(withExtractNativeLibs(extractNativeLibs))
         .setEntries(moduleEntries)
         .build();

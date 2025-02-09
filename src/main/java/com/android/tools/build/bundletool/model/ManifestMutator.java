@@ -23,10 +23,12 @@ import java.util.function.Consumer;
 @Immutable
 public interface ManifestMutator extends Consumer<ManifestEditor> {
 
+  /** Add the {@code extractNativeLibs} attribute to the manifest. */
   static ManifestMutator withExtractNativeLibs(boolean value) {
     return manifestEditor -> manifestEditor.setExtractNativeLibsValue(value);
   }
 
+  /** Add the {@code isSplitRequired} attribute to the manifest. */
   static ManifestMutator withSplitsRequired(boolean value) {
     return manifestEditor -> manifestEditor.setSplitsRequired(value);
   }

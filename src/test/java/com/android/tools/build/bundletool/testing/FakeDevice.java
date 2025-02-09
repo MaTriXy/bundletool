@@ -16,6 +16,7 @@
 
 package com.android.tools.build.bundletool.testing;
 
+import static com.android.tools.build.bundletool.device.DeviceAnalyzer.GET_MEMORY_KIB_SHELL_COMMAND;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -34,8 +35,15 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.io.ByteStreams;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -50,10 +58,14 @@ public class FakeDevice extends Device {
   private final ImmutableList<String> abis;
   private final int density;
   private final ImmutableList<String> features;
+  private final ImmutableList<String> glExtensions;
   private final String serialNumber;
   private final ImmutableMap<String, String> properties;
   private final Map<String, FakeShellCommandAction> commandInjections = new HashMap<>();
-  private Optional<SideEffect> installApksSideEffect = Optional.empty();
+  private final boolean hasPrivacySandbox;
+  private Optional<SideEffect<InstallOptions>> installApksSideEffect = Optional.empty();
+  private Optional<SideEffect<PushOptions>> pushSideEffect = Optional.empty();
+  private Optional<RemoveRemotePathSideEffect> removeRemotePathSideEffect = Optional.empty();
   private static final Joiner COMMA_JOINER = Joiner.on(',');
   private static final Joiner DASH_JOINER = Joiner.on('-');
   private static final Joiner LINE_JOINER = Joiner.on(System.getProperty("line.separator"));
@@ -66,14 +78,19 @@ public class FakeDevice extends Device {
       ImmutableList<String> abis,
       int density,
       ImmutableList<String> features,
-      ImmutableMap<String, String> properties) {
+      ImmutableList<String> glExtensions,
+      ImmutableMap<String, String> properties,
+      Optional<String> androidVersionCodeName,
+      boolean hasPrivacySandbox) {
     this.state = state;
-    this.androidVersion = new AndroidVersion(sdkVersion);
+    this.androidVersion = new AndroidVersion(sdkVersion, androidVersionCodeName.orElse(null));
     this.abis = abis;
     this.density = density;
     this.serialNumber = serialNumber;
     this.properties = properties;
+    this.glExtensions = glExtensions;
     this.features = features;
+    this.hasPrivacySandbox = hasPrivacySandbox;
   }
 
   public static FakeDevice fromDeviceSpecWithProperties(
@@ -81,6 +98,14 @@ public class FakeDevice extends Device {
       DeviceState deviceState,
       DeviceSpec deviceSpec,
       ImmutableMap<String, String> properties) {
+    ImmutableMap<String, String> allProperties =
+        ImmutableMap.<String, String>builder()
+            .putAll(properties)
+            .put("ro.product.brand", deviceSpec.getBuildBrand())
+            .put("ro.product.device", deviceSpec.getBuildDevice())
+            .put("ro.soc.manufacturer", deviceSpec.getSocManufacturer())
+            .put("ro.soc.model", deviceSpec.getSocModel())
+            .buildOrThrow();
     FakeDevice device =
         new FakeDevice(
             deviceId,
@@ -89,7 +114,12 @@ public class FakeDevice extends Device {
             ImmutableList.copyOf(deviceSpec.getSupportedAbisList()),
             deviceSpec.getScreenDensity(),
             ImmutableList.copyOf(deviceSpec.getDeviceFeaturesList()),
-            properties);
+            ImmutableList.copyOf(deviceSpec.getGlExtensionsList()),
+            allProperties,
+            deviceSpec.getCodename().isEmpty()
+                ? Optional.empty()
+                : Optional.of(deviceSpec.getCodename()),
+            deviceSpec.getSdkRuntime().getSupported());
     device.injectShellCommandOutput(
         "pm list features",
         () ->
@@ -108,6 +138,17 @@ public class FakeDevice extends Device {
                             deviceSpec.getSupportedLocalesList().stream()
                                 .map(FakeDevice::convertLocaleToResourceString)
                                 .collect(toImmutableList())))));
+    device.injectShellCommandOutput(
+        "dumpsys SurfaceFlinger",
+        () ->
+            LINE_JOINER.join(
+                ImmutableList.of(
+                    "SurfaceFlinger global state:",
+                    "EGL implementation : 1.4",
+                    "GLES: FakeDevice, OpenGL ES 3.0",
+                    DASH_JOINER.join(deviceSpec.getGlExtensionsList()))));
+    device.injectShellCommandOutput(
+        GET_MEMORY_KIB_SHELL_COMMAND, () -> String.format("%d", deviceSpec.getRamBytes() / 1024));
     return device;
   }
 
@@ -153,7 +194,10 @@ public class FakeDevice extends Device {
         ImmutableList.of(),
         /* density= */ -1,
         ImmutableList.of(),
-        ImmutableMap.of());
+        ImmutableList.of(),
+        ImmutableMap.of(),
+        Optional.empty(),
+        /* hasPrivacySandbox= */ false);
   }
 
   @Override
@@ -192,6 +236,11 @@ public class FakeDevice extends Device {
   }
 
   @Override
+  public ImmutableList<String> getGlExtensions() {
+    return glExtensions;
+  }
+
+  @Override
   public void executeShellCommand(
       String command,
       IShellOutputReceiver receiver,
@@ -200,7 +249,10 @@ public class FakeDevice extends Device {
       throws TimeoutException, AdbCommandRejectedException, ShellCommandUnresponsiveException,
           IOException {
 
-    checkState(commandInjections.containsKey(command));
+    checkState(
+        commandInjections.containsKey(command),
+        "Command %s not found in command injections.",
+        command);
     byte[] data = commandInjections.get(command).onExecute().getBytes(UTF_8);
     receiver.addOutput(data, 0, data.length);
     receiver.flush();
@@ -208,11 +260,61 @@ public class FakeDevice extends Device {
 
   @Override
   public void installApks(ImmutableList<Path> apks, InstallOptions installOptions) {
+    for (Path apk : apks) {
+      checkState(Files.exists(apk));
+    }
     installApksSideEffect.ifPresent(val -> val.apply(apks, installOptions));
   }
 
-  public void setInstallApksSideEffect(SideEffect sideEffect) {
+  @Override
+  public void push(ImmutableList<Path> files, PushOptions pushOptions) {
+    for (Path file : files) {
+      checkState(Files.exists(file));
+    }
+    pushSideEffect.ifPresent(val -> val.apply(files, pushOptions));
+  }
+
+  @Override
+  public Path syncPackageToDevice(Path localFilePath) {
+    checkState(Files.exists(localFilePath));
+    return Paths.get("/temp", localFilePath.getFileName().toString());
+  }
+
+  @Override
+  public void removeRemotePath(
+      String remoteFilePath, Optional<String> runAsPackageName, Duration timeout) {
+    removeRemotePathSideEffect.ifPresent(
+        val -> val.apply(remoteFilePath, runAsPackageName, timeout));
+  }
+
+  @Override
+  public void pull(ImmutableList<FilePullParams> files) {
+    for (FilePullParams filePullParams : files) {
+      Path sourcePath = Paths.get(filePullParams.getPathOnDevice());
+      try (InputStream inputStream = Files.newInputStream(sourcePath);
+          OutputStream outputStream = Files.newOutputStream(filePullParams.getDestinationPath())) {
+        ByteStreams.copy(inputStream, outputStream);
+      } catch (IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    }
+  }
+
+  @Override
+  public boolean supportsPrivacySandbox() {
+    return hasPrivacySandbox;
+  }
+
+  public void setInstallApksSideEffect(SideEffect<InstallOptions> sideEffect) {
     installApksSideEffect = Optional.of(sideEffect);
+  }
+
+  public void setPushSideEffect(SideEffect<PushOptions> sideEffect) {
+    pushSideEffect = Optional.of(sideEffect);
+  }
+
+  public void setRemoveRemotePathSideEffect(RemoveRemotePathSideEffect sideEffect) {
+    removeRemotePathSideEffect = Optional.of(sideEffect);
   }
 
   public void clearInstallApksSideEffect() {
@@ -231,8 +333,13 @@ public class FakeDevice extends Device {
             IOException;
   }
 
+  /** Remove remote path side effect. */
+  public interface RemoveRemotePathSideEffect {
+    void apply(String remotePath, Optional<String> runAs, Duration timeout);
+  }
+
   /** Side effect. */
-  public interface SideEffect {
-    void apply(ImmutableList<Path> apks, InstallOptions installOptions);
+  public interface SideEffect<T> {
+    void apply(ImmutableList<Path> apks, T options);
   }
 }

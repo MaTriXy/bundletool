@@ -19,29 +19,29 @@ package com.android.tools.build.bundletool.io;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 
-import com.android.tools.build.bundletool.model.InputStreamSupplier;
 import com.android.tools.build.bundletool.model.ZipPath;
+import com.android.tools.build.bundletool.model.utils.ZipUtils;
 import com.android.tools.build.bundletool.model.utils.files.BufferedIo;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.io.ByteStreams;
+import com.google.common.hash.Hashing;
+import com.google.common.io.ByteSource;
 import com.google.errorprone.annotations.Immutable;
 import com.google.protobuf.MessageLite;
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Enumeration;
+import java.util.GregorianCalendar;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
+import javax.annotation.concurrent.GuardedBy;
 
 /**
  * Builder for creating zip files.
@@ -50,9 +50,14 @@ import java.util.zip.ZipOutputStream;
  * invoked.
  */
 public final class ZipBuilder {
-  private static final Long EPOCH = 0L;
+  private static final long PRELOAD_INTO_MEMORY_THRESHOLD = 150 * 1024 * 1024L;
+
+  /** Normalize timestamps. */
+  private static final long DEFAULT_TIMESTAMP =
+      new GregorianCalendar(2010, 0, 1, 0, 0, 0).getTimeInMillis();
 
   /** Entries to be output. */
+  @GuardedBy("this")
   private final Map<ZipPath, Entry> entries = new LinkedHashMap<>();
 
   /**
@@ -77,30 +82,33 @@ public final class ZipBuilder {
             // For directories, we append "/" at the end of the file path since that's what the
             // ZipEntry class relies on.
             ZipEntry zipEntry = new ZipEntry(path + "/");
-            zipEntry.setTime(EPOCH);
+            zipEntry.setTime(DEFAULT_TIMESTAMP);
             outZip.putNextEntry(zipEntry);
             // Directories are represented as having empty content in a zip file, so we don't write
             // any bytes to the outZip for this entry.
           } else {
             ZipEntry zipEntry = new ZipEntry(path.toString());
-            zipEntry.setTime(EPOCH);
+            zipEntry.setTime(DEFAULT_TIMESTAMP);
             if (entry.hasOption(EntryOption.UNCOMPRESSED)) {
               zipEntry.setMethod(ZipEntry.STORED);
               // ZipFile API requires us to set the following properties manually for uncompressed
               // ZipEntries, just setting the compression method is not enough.
-              try (InputStream is = entry.getInputStreamSupplier().get().get()) {
-                byte[] entryData = ByteStreams.toByteArray(is);
-                zipEntry.setSize(entryData.length);
-                zipEntry.setCompressedSize(entryData.length);
-                zipEntry.setCrc(computeCrc32(entryData));
-                outZip.putNextEntry(zipEntry);
-                outZip.write(entryData);
-              }
+              ByteSource originalData = entry.getContent().get();
+              // If entry is small enough it would be better to preload it into memory to not
+              // read it twice. Two reads are required because we need to know crc32 before we put
+              // entry content into zip.
+              ByteSource entryData =
+                  originalData.size() < PRELOAD_INTO_MEMORY_THRESHOLD
+                      ? preloadEntryData(originalData)
+                      : originalData;
+              zipEntry.setSize(entryData.size());
+              zipEntry.setCompressedSize(entryData.size());
+              zipEntry.setCrc(entryData.hash(Hashing.crc32()).padToLong());
+              outZip.putNextEntry(zipEntry);
+              entry.getContent().get().copyTo(outZip);
             } else {
               outZip.putNextEntry(zipEntry);
-              try (InputStream content = entry.getInputStreamSupplier().get().get()) {
-                ByteStreams.copy(content, outZip);
-              }
+              entry.getContent().get().copyTo(outZip);
             }
           }
           outZip.closeEntry();
@@ -110,9 +118,8 @@ public final class ZipBuilder {
       // Fails if the target file exists.
       Files.move(tempFile, target);
 
-    } catch (IOException e) {
+    } finally {
       Files.deleteIfExists(tempFile);
-      throw e;
     }
 
     return target;
@@ -124,7 +131,7 @@ public final class ZipBuilder {
    * <p>Will throw an exception if the path is already taken.
    */
   public ZipBuilder addFileWithContent(ZipPath toPath, byte[] content, EntryOption... options) {
-    return addFile(toPath, () -> new ByteArrayInputStream(content), options);
+    return addFile(toPath, ByteSource.wrap(content), options);
   }
 
   /**
@@ -134,7 +141,7 @@ public final class ZipBuilder {
    */
   public ZipBuilder addFileFromDisk(ZipPath toPath, File file, EntryOption... options) {
     checkArgument(file.isFile(), "Path '%s' does not denote a file.", file);
-    return addFile(toPath, BufferedIo.inputStreamSupplier(file.toPath()), options);
+    return addFile(toPath, com.google.common.io.Files.asByteSource(file), options);
   }
 
   /**
@@ -144,7 +151,7 @@ public final class ZipBuilder {
    */
   public ZipBuilder addFileWithProtoContent(
       ZipPath toPath, MessageLite protoMsg, EntryOption... options) {
-    return addFile(toPath, () -> new ByteArrayInputStream(protoMsg.toByteArray()), options);
+    return addFileWithContent(toPath, protoMsg.toByteArray(), options);
   }
 
   /**
@@ -154,7 +161,7 @@ public final class ZipBuilder {
    */
   public ZipBuilder addFileFromZip(
       ZipPath toPath, ZipFile fromZipFile, ZipEntry zipEntry, EntryOption... options) {
-    return addFile(toPath, BufferedIo.inputStreamSupplier(fromZipFile, zipEntry), options);
+    return addFile(toPath, ZipUtils.asByteSource(fromZipFile, zipEntry), options);
   }
 
   /**
@@ -173,19 +180,17 @@ public final class ZipBuilder {
   }
 
   /**
-   * Lazily adds a file in the zip at the given location with the content of the {@code
-   * inputStreamSupplier}.
+   * Lazily adds a file in the zip at the given location with the content of the {@link ByteSource}.
    *
-   * <p>Note that the input stream needs to remain available until the method {@link #writeTo(Path)}
-   * has been invoked.
+   * <p>Note that the content needs to remain available until the method {@link #writeTo(Path)} has
+   * been invoked.
    */
-  public ZipBuilder addFile(
-      ZipPath toPath, InputStreamSupplier inputStreamSupplier, EntryOption... options) {
+  public ZipBuilder addFile(ZipPath toPath, ByteSource content, EntryOption... options) {
     return addEntryInternal(
         toPath,
         Entry.builder()
             .setIsDirectory(false)
-            .setInputStreamSupplier(inputStreamSupplier)
+            .setContent(content)
             .setOptions(ImmutableSet.copyOf(options))
             .build());
   }
@@ -233,9 +238,10 @@ public final class ZipBuilder {
   @Immutable
   @AutoValue
   @AutoValue.CopyAnnotations
+  @SuppressWarnings("Immutable")
   protected abstract static class Entry {
     /** Absent for directory entries. */
-    public abstract Optional<InputStreamSupplier> getInputStreamSupplier();
+    public abstract Optional<ByteSource> getContent();
 
     public abstract boolean getIsDirectory();
 
@@ -251,7 +257,7 @@ public final class ZipBuilder {
 
     @AutoValue.Builder
     abstract static class Builder {
-      public abstract Builder setInputStreamSupplier(InputStreamSupplier inputStreamSupplier);
+      public abstract Builder setContent(ByteSource byteSource);
 
       public abstract Builder setIsDirectory(boolean isDirectory);
 
@@ -263,8 +269,8 @@ public final class ZipBuilder {
         Entry result = autoBuild();
         // ZipBuilder implementations may rely on this precondition.
         checkState(
-            result.getInputStreamSupplier().isPresent() ^ result.getIsDirectory(),
-            "Input stream supplier must be absent iff the entry is a directory.");
+            result.getContent().isPresent() ^ result.getIsDirectory(),
+            "Content must be absent iff the entry is a directory.");
         return result;
       }
     }
@@ -280,9 +286,7 @@ public final class ZipBuilder {
     UNCOMPRESSED
   }
 
-  private static long computeCrc32(byte[] data) {
-    CRC32 crc32 = new CRC32();
-    crc32.update(data);
-    return crc32.getValue();
+  private static ByteSource preloadEntryData(ByteSource byteSource) throws IOException {
+    return ByteSource.wrap(byteSource.read());
   }
 }

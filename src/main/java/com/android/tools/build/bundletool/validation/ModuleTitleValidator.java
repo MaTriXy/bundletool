@@ -17,14 +17,14 @@
 package com.android.tools.build.bundletool.validation;
 
 import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.entries;
+import static com.android.tools.build.bundletool.model.version.VersionGuardedFeature.MODULE_TITLE_VALIDATION_ENFORCED;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.android.aapt.Resources.ResourceTable;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.BundleModule.ModuleDeliveryType;
 import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
-import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.model.ModuleDeliveryType;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -39,12 +39,16 @@ public class ModuleTitleValidator extends SubValidator {
   }
 
   private static void checkModuleTitles(ImmutableList<BundleModule> modules) {
+    if (BundleValidationUtils.isAssetOnlyBundle(modules)) {
+      return;
+    }
 
-    BundleModule baseModule = modules.stream().filter(BundleModule::isBaseModule).findFirst().get();
+    BundleModule baseModule = BundleValidationUtils.expectBaseModule(modules);
+    boolean isolatedSplits = baseModule.getAndroidManifest().getIsolatedSplits().orElse(false);
 
     // For bundles built using older versions we haven't strictly enforced module Title Validation.
-    if (BundleToolVersion.getVersionFromBundleConfig(baseModule.getBundleConfig())
-        .isOlderThan(Version.of("0.4.3"))) {
+    Version bundletoolVersion = baseModule.getBundletoolVersion();
+    if (!MODULE_TITLE_VALIDATION_ENFORCED.enabledForVersion(bundletoolVersion)) {
       return;
     }
     ResourceTable table = baseModule.getResourceTable().orElse(ResourceTable.getDefaultInstance());
@@ -58,24 +62,28 @@ public class ModuleTitleValidator extends SubValidator {
     for (BundleModule module : modules) {
       if (module.getModuleType().equals(ModuleType.ASSET_MODULE)) {
         if (module.getAndroidManifest().getTitleRefId().isPresent()) {
-          throw ValidationException.builder()
-              .withMessage(
-                    "Module titles not supported in asset packs, but found in '%s'.",
+          throw InvalidBundleException.builder()
+              .withUserMessage(
+                  "Module titles not supported in asset packs, but found in '%s'.",
                   module.getName())
               .build();
         }
       } else if (!module.getDeliveryType().equals(ModuleDeliveryType.ALWAYS_INITIAL_INSTALL)) {
         Optional<Integer> titleRefId = module.getAndroidManifest().getTitleRefId();
-
+        if (isolatedSplits) {
+          // Isolated splits may be built independently from the base split, and can't include
+          // references into the base split resource table.
+          return;
+        }
         if (!titleRefId.isPresent()) {
-          throw ValidationException.builder()
-              .withMessage(
+          throw InvalidBundleException.builder()
+              .withUserMessage(
                   "Mandatory title is missing in manifest for module '%s'.", module.getName())
               .build();
         }
         if (!stringResourceIds.contains(titleRefId.get())) {
-          throw ValidationException.builder()
-              .withMessage(
+          throw InvalidBundleException.builder()
+              .withUserMessage(
                   "Title for module '%s' is missing in the base resource table.", module.getName())
               .build();
         }

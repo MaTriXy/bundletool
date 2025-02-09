@@ -21,22 +21,39 @@ import static com.android.bundle.Targeting.Abi.AbiAlias.X86;
 import static com.android.bundle.Targeting.Abi.AbiAlias.X86_64;
 import static com.android.bundle.Targeting.ScreenDensity.DensityAlias.HDPI;
 import static com.android.bundle.Targeting.ScreenDensity.DensityAlias.LDPI;
+import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.ASTC;
+import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.ETC2;
+import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.PVRTC;
 import static com.android.tools.build.bundletool.model.SizeConfiguration.getAbiName;
+import static com.android.tools.build.bundletool.model.SizeConfiguration.getCountrySetName;
+import static com.android.tools.build.bundletool.model.SizeConfiguration.getDeviceGroupName;
+import static com.android.tools.build.bundletool.model.SizeConfiguration.getDeviceTierLevel;
 import static com.android.tools.build.bundletool.model.SizeConfiguration.getLocaleName;
 import static com.android.tools.build.bundletool.model.SizeConfiguration.getScreenDensityName;
 import static com.android.tools.build.bundletool.model.SizeConfiguration.getSdkName;
+import static com.android.tools.build.bundletool.model.SizeConfiguration.getSdkRuntimeRequired;
+import static com.android.tools.build.bundletool.model.SizeConfiguration.getTextureCompressionFormatName;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.abiTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.alternativeCountrySetTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.countrySetTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceGroupTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.languageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.screenDensityTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersionFrom;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersionTargeting;
-import static com.google.common.truth.Truth8.assertThat;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.textureCompressionTargeting;
+import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.bundle.Targeting.AbiTargeting;
+import com.android.bundle.Targeting.CountrySetTargeting;
 import com.android.bundle.Targeting.LanguageTargeting;
 import com.android.bundle.Targeting.ScreenDensityTargeting;
+import com.android.bundle.Targeting.SdkRuntimeTargeting;
 import com.android.bundle.Targeting.SdkVersionTargeting;
+import com.android.bundle.Targeting.TextureCompressionFormatTargeting;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -114,5 +131,76 @@ public class SizeConfigurationTest {
         () ->
             getScreenDensityName(
                 screenDensityTargeting(ImmutableSet.of(HDPI, LDPI), ImmutableSet.of())));
+  }
+
+  @Test
+  public void getAbi_defaultTextureCompressionFormatTargeting() {
+    assertThat(
+            getTextureCompressionFormatName(TextureCompressionFormatTargeting.getDefaultInstance()))
+        .isEmpty();
+  }
+
+  @Test
+  public void getTextureCompressionFormat_singleTextureCompressionFormatTargeting() {
+    assertThat(getTextureCompressionFormatName(textureCompressionTargeting(ASTC))).hasValue("astc");
+    assertThat(getTextureCompressionFormatName(textureCompressionTargeting(ETC2))).hasValue("etc2");
+    assertThat(getTextureCompressionFormatName(textureCompressionTargeting(PVRTC)))
+        .hasValue("pvrtc");
+  }
+
+  @Test
+  public void getTextureCompressionFormat_multipleTextureCompressionFormatTargeting_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            getTextureCompressionFormatName(
+                textureCompressionTargeting(ImmutableSet.of(ASTC, ETC2), ImmutableSet.of())));
+  }
+
+  @Test
+  public void getDeviceTier_singleDevicetierTargeting() {
+    assertThat(getDeviceTierLevel(deviceTierTargeting(0))).hasValue(0);
+    assertThat(
+            getDeviceTierLevel(
+                deviceTierTargeting(/* value= */ 1, /* alternatives= */ ImmutableList.of(0))))
+        .hasValue(1);
+  }
+
+  @Test
+  public void getDeviceGroup_singleDeviceGroupTargeting() {
+    assertThat(getDeviceGroupName(deviceGroupTargeting("a"))).hasValue("a");
+    assertThat(
+            getDeviceGroupName(
+                deviceGroupTargeting(/* value= */ "b", /* alternatives= */ ImmutableList.of("a"))))
+        .hasValue("b");
+  }
+
+  @Test
+  public void getCountrySetName_onlyAlternativesIn_countrySetTargeting() {
+    assertThat(getCountrySetName(alternativeCountrySetTargeting(ImmutableList.of("latam", "sea"))))
+        .hasValue("");
+  }
+
+  @Test
+  public void getCountrySet_emptyCountrySetTargeting() {
+    assertThat(getCountrySetName(CountrySetTargeting.getDefaultInstance())).isEmpty();
+  }
+
+  @Test
+  public void getCountrySet_withValuesAndAlternativesIn_countrySetTargeting() {
+    assertThat(getCountrySetName(countrySetTargeting("sea", ImmutableList.of("latam", "europe"))))
+        .hasValue("sea");
+  }
+
+  @Test
+  public void getSdkRuntime() {
+    assertThat(
+            getSdkRuntimeRequired(
+                SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(true).build()))
+        .isEqualTo("Required");
+    assertThat(
+            getSdkRuntimeRequired(
+                SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(false).build()))
+        .isEqualTo("Not Required");
   }
 }

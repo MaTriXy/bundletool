@@ -17,6 +17,8 @@
 package com.android.tools.build.bundletool.validation;
 
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForAssetModule;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withIsolatedSplits;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,10 +32,9 @@ import com.android.bundle.Files.NativeLibraries;
 import com.android.bundle.Files.TargetedAssetsDirectory;
 import com.android.bundle.Files.TargetedNativeDirectory;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.google.common.collect.ImmutableList;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -62,7 +63,7 @@ public class EntryClashValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB));
+    EntryClashValidator.checkEntryClashes(ImmutableList.of(moduleA, moduleB));
   }
 
   @Test
@@ -81,20 +82,24 @@ public class EntryClashValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB));
+    EntryClashValidator.checkEntryClashes(ImmutableList.of(moduleA, moduleB));
   }
 
   @Test
   public void differentManifests_ok() throws Exception {
     String filePath = "manifest/AndroidManifest.xml";
-    byte[] fileContentA = XmlNode.getDefaultInstance().toByteArray();
+    byte[] fileContentA =
+        XmlNode.newBuilder().setElement(XmlElement.getDefaultInstance()).build().toByteArray();
     byte[] fileContentB =
-        XmlNode.newBuilder().setElement(XmlElement.newBuilder()).build().toByteArray();
+        XmlNode.newBuilder()
+            .setElement(XmlElement.newBuilder().addChild(XmlNode.getDefaultInstance()))
+            .build()
+            .toByteArray();
     assertThat(fileContentA).isNotEqualTo(fileContentB);
     BundleModule moduleA = new BundleModuleBuilder("a").addFile(filePath, fileContentA).build();
     BundleModule moduleB = new BundleModuleBuilder("b").addFile(filePath, fileContentB).build();
 
-    new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB));
+    EntryClashValidator.checkEntryClashes(ImmutableList.of(moduleA, moduleB));
   }
 
   @Test
@@ -118,7 +123,7 @@ public class EntryClashValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB));
+    EntryClashValidator.checkEntryClashes(ImmutableList.of(moduleA, moduleB));
   }
 
   @Test
@@ -139,12 +144,12 @@ public class EntryClashValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB));
+    EntryClashValidator.checkEntryClashes(ImmutableList.of(moduleA, moduleB));
   }
 
   @Test
   public void entryNameCollision_filesWithSameContent_ok() throws Exception {
-    String filePath = "assets/file.txt";
+    String filePath = "res/file.txt";
     byte[] sharedData = "same across modules".getBytes(UTF_8);
     BundleModule moduleA =
         new BundleModuleBuilder("a")
@@ -157,7 +162,7 @@ public class EntryClashValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB));
+    EntryClashValidator.checkEntryClashes(ImmutableList.of(moduleA, moduleB));
   }
 
   @Test
@@ -176,10 +181,10 @@ public class EntryClashValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    CommandExecutionException exception =
+    InvalidBundleException exception =
         assertThrows(
-            CommandExecutionException.class,
-            () -> new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB)));
+            InvalidBundleException.class,
+            () -> EntryClashValidator.checkEntryClashes(ImmutableList.of(moduleA, moduleB)));
 
     assertThat(exception)
         .hasMessageThat()
@@ -187,44 +192,66 @@ public class EntryClashValidatorTest {
   }
 
   @Test
-  public void entryNameCollision_directories_ok() throws Exception {
-    String dirName = "assets/dir";
+  public void entryNameCollision_filesWithDifferentContent_isolatedSplits_ok() throws Exception {
+    String fileName = "assets/file.txt";
+    byte[] fileContentA = {'a'};
+    byte[] fileContentB = {'b'};
     BundleModule moduleA =
-        new BundleModuleBuilder("a")
-            .addDirectory(dirName)
-            .setManifest(androidManifest("com.test.app"))
+        new BundleModuleBuilder("base")
+            .addFile(fileName, fileContentA)
+            .setManifest(androidManifest("com.test.app", withIsolatedSplits(true)))
             .build();
     BundleModule moduleB =
         new BundleModuleBuilder("b")
-            .addDirectory(dirName)
+            .addFile(fileName, fileContentB)
             .setManifest(androidManifest("com.test.app"))
             .build();
-
     new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB));
   }
 
-  @Ignore("BundleModule#getEntries currently cannot contain directory entries.")
   @Test
-  public void entryNameCollision_fileAndDirectoryOfSameName_throws() throws Exception {
-    String fileOrDirName = "assets/file-or-dir";
-    BundleModule moduleA =
-        new BundleModuleBuilder("a")
-            .addFile(fileOrDirName, new byte[1])
+  public void entryNameCollision_theSameFileBetweenAssetModules_ok() throws Exception {
+    String fileName = "assets/file.txt";
+    byte[] fileContentA = {'a'};
+    BundleModule base =
+        new BundleModuleBuilder("base").setManifest(androidManifest("com.test.app")).build();
+    BundleModule assetModule1 =
+        new BundleModuleBuilder("assets1")
+            .addFile(fileName, fileContentA)
+            .setManifest(androidManifestForAssetModule("com.test.app"))
+            .build();
+    BundleModule assetModule2 =
+        new BundleModuleBuilder("assets2")
+            .addFile(fileName, fileContentA)
+            .setManifest(androidManifestForAssetModule("com.test.app"))
+            .build();
+    new EntryClashValidator()
+        .validateAllModules(ImmutableList.of(base, assetModule1, assetModule2));
+  }
+
+  @Test
+  public void entryNameCollision_theSameFileBetweenBaseAndAssetModule_throws() throws Exception {
+    String fileName = "assets/file.txt";
+    byte[] fileContentA = {'a'};
+    BundleModule baseModule =
+        new BundleModuleBuilder("base")
+            .addFile(fileName, fileContentA)
             .setManifest(androidManifest("com.test.app"))
             .build();
-    BundleModule moduleB =
-        new BundleModuleBuilder("b")
-            .addDirectory(fileOrDirName)
-            .setManifest(androidManifest("com.test.app"))
+    BundleModule assetModule =
+        new BundleModuleBuilder("assets1")
+            .addFile(fileName, fileContentA)
+            .setManifest(androidManifestForAssetModule("com.test.app"))
             .build();
 
-    CommandExecutionException exception =
+    InvalidBundleException exception =
         assertThrows(
-            CommandExecutionException.class,
-            () -> new EntryClashValidator().validateAllModules(ImmutableList.of(moduleA, moduleB)));
-
+            InvalidBundleException.class,
+            () ->
+                new EntryClashValidator()
+                    .validateAllModules(ImmutableList.of(baseModule, assetModule)));
     assertThat(exception)
         .hasMessageThat()
-        .contains("Modules 'a' and 'b' contain entry 'assets/file-or-dir' with different content.");
+        .isEqualTo("Both modules 'base' and 'assets1' contain asset entry 'assets/file.txt'.");
   }
 }

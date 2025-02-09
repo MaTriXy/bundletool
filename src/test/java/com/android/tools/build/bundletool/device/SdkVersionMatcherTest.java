@@ -17,12 +17,14 @@
 package com.android.tools.build.bundletool.device;
 
 import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceWithSdk;
+import static com.android.tools.build.bundletool.testing.DeviceFactory.deviceWithSdkAndCodename;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersionFrom;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersionTargeting;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.bundle.Targeting.SdkVersion;
+import com.android.tools.build.bundletool.model.exceptions.IncompatibleDeviceException;
 import com.google.common.collect.ImmutableSet;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -57,7 +59,7 @@ public class SdkVersionMatcherTest {
                     sdkVersionTargeting(sdkVersionFrom(22), ImmutableSet.of())));
     assertThat(exception)
         .hasMessageThat()
-        .contains("The app doesn't support SDK version of the device: (21).");
+        .contains("SDK version (21) of the device is not supported.");
 
     exception =
         assertThrows(
@@ -69,7 +71,7 @@ public class SdkVersionMatcherTest {
                         ImmutableSet.of(sdkVersionFrom(22), sdkVersionFrom(27)))));
     assertThat(exception)
         .hasMessageThat()
-        .contains("The app doesn't support SDK version of the device: (21).");
+        .contains("SDK version (21) of the device is not supported.");
   }
 
   @Test
@@ -119,5 +121,30 @@ public class SdkVersionMatcherTest {
                     sdkVersionFrom(27),
                     ImmutableSet.of(sdkVersionFrom(23), SdkVersion.getDefaultInstance()))))
         .isFalse();
+  }
+
+  @Test
+  public void preReleaseAppReleaseDevice_fails() {
+    SdkVersionMatcher sdkMatcher = new SdkVersionMatcher(deviceWithSdk(29));
+
+    Throwable exception;
+    exception =
+        assertThrows(
+            IncompatibleDeviceException.class,
+            () ->
+                sdkMatcher.checkDeviceCompatible(
+                    sdkVersionTargeting(sdkVersionFrom(10_000), ImmutableSet.of())));
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("SDK version (29) of the device is not supported.");
+  }
+
+  @Test
+  public void preReleaseAppPreReleaseDevice_succeeds() {
+    SdkVersionMatcher sdkMatcher = new SdkVersionMatcher(deviceWithSdkAndCodename(29, "R"));
+
+    assertThat(
+        sdkMatcher.matchesTargeting(sdkVersionTargeting(sdkVersionFrom(10_000), ImmutableSet.of())))
+        .isTrue();
   }
 }

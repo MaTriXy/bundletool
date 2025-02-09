@@ -16,15 +16,24 @@
 
 package com.android.tools.build.bundletool.mergers;
 
+import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.ATC;
+import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.ETC1_RGB8;
+import static com.android.bundle.Targeting.TextureCompressionFormat.TextureCompressionFormatAlias.S3TC;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.abiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAbiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAlternativeLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDensityTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDeviceGroupTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkDeviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkMinSdkTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.apkTextureTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceGroupTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.deviceTierTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.languageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeApkTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.screenDensityTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.textureCompressionTargeting;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -33,6 +42,7 @@ import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import org.junit.Test;
 import org.junit.experimental.theories.Theories;
@@ -52,7 +62,9 @@ public class MergingUtilsTest {
 
     assertThat(exception)
         .hasMessageThat()
-        .contains("Expecting only ABI, screen density and language targeting");
+        .contains(
+            "Expecting only ABI, screen density, language, texture compression format,"
+                + " device tier, device group and country set targeting");
   }
 
   @Test
@@ -66,7 +78,9 @@ public class MergingUtilsTest {
 
     assertThat(exception)
         .hasMessageThat()
-        .contains("Expecting only ABI, screen density and language targeting");
+        .contains(
+            "Expecting only ABI, screen density, language, texture compression format,"
+                + " device tier, device group and country set targeting");
   }
 
   @Test
@@ -106,6 +120,31 @@ public class MergingUtilsTest {
 
     assertThat(MergingUtils.mergeShardTargetings(targeting, targeting))
         .isEqualTo(apkLanguageTargeting("en"));
+  }
+
+  @Test
+  public void mergeShardTargetings_equalTextureCompressionFormat_ok() {
+    ApkTargeting targeting =
+        apkTextureTargeting(textureCompressionTargeting(S3TC, ImmutableSet.of(ETC1_RGB8)));
+
+    assertThat(MergingUtils.mergeShardTargetings(targeting, targeting))
+        .isEqualTo(
+            apkTextureTargeting(textureCompressionTargeting(S3TC, ImmutableSet.of(ETC1_RGB8))));
+  }
+
+  @Test
+  public void mergeShardTargetings_equalDeviceTier_ok() {
+    ApkTargeting targeting = apkDeviceTierTargeting(deviceTierTargeting(0, ImmutableList.of(1)));
+
+    assertThat(MergingUtils.mergeShardTargetings(targeting, targeting)).isEqualTo(targeting);
+  }
+
+  @Test
+  public void mergeShardTargetings_equalDeviceGroup_ok() {
+    ApkTargeting targeting =
+        apkDeviceGroupTargeting(deviceGroupTargeting("a", ImmutableList.of("b")));
+
+    assertThat(MergingUtils.mergeShardTargetings(targeting, targeting)).isEqualTo(targeting);
   }
 
   @Test
@@ -150,6 +189,39 @@ public class MergingUtilsTest {
 
     assertThat(MergingUtils.mergeShardTargetings(targeting1, targeting2))
         .isEqualTo(apkLanguageTargeting(ImmutableSet.of("fr"), ImmutableSet.of("en", "jp")));
+  }
+
+  @Test
+  public void mergeShardTargetings_differentTextureCompressionFormats_ok() {
+    ApkTargeting targeting1 =
+        apkTextureTargeting(textureCompressionTargeting(S3TC, ImmutableSet.of(ETC1_RGB8)));
+    ApkTargeting targeting2 =
+        apkTextureTargeting(textureCompressionTargeting(S3TC, ImmutableSet.of(ATC)));
+
+    assertThat(MergingUtils.mergeShardTargetings(targeting1, targeting2))
+        .isEqualTo(
+            apkTextureTargeting(
+                textureCompressionTargeting(S3TC, ImmutableSet.of(ETC1_RGB8, ATC))));
+  }
+
+  @Test
+  public void mergeShardTargetings_differentDeviceGroups_ok() {
+    ApkTargeting targeting1 =
+        apkDeviceGroupTargeting(deviceGroupTargeting("a", ImmutableList.of("b")));
+    ApkTargeting targeting2 =
+        apkDeviceGroupTargeting(deviceGroupTargeting("a", ImmutableList.of("c")));
+
+    assertThat(MergingUtils.mergeShardTargetings(targeting1, targeting2))
+        .isEqualTo(apkDeviceGroupTargeting(deviceGroupTargeting("a", ImmutableList.of("b", "c"))));
+  }
+
+  @Test
+  public void mergeShardTargetings_differentDeviceTiers_ok() {
+    ApkTargeting targeting1 = apkDeviceTierTargeting(deviceTierTargeting(0, ImmutableList.of(1)));
+    ApkTargeting targeting2 = apkDeviceTierTargeting(deviceTierTargeting(0, ImmutableList.of(2)));
+
+    assertThat(MergingUtils.mergeShardTargetings(targeting1, targeting2))
+        .isEqualTo(apkDeviceTierTargeting(deviceTierTargeting(0, ImmutableList.of(1, 2))));
   }
 
   @Test

@@ -24,15 +24,15 @@ import com.android.aapt.Resources.FileReference;
 import com.android.aapt.Resources.Item;
 import com.android.aapt.Resources.Value;
 import com.android.aapt.Resources.XmlNode;
-import com.android.tools.build.bundletool.model.GeneratedApks;
-import com.android.tools.build.bundletool.model.InMemoryModuleEntry;
 import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.android.tools.build.bundletool.model.ResourceId;
 import com.android.tools.build.bundletool.model.ResourceInjector;
 import com.android.tools.build.bundletool.model.SplitsProtoXmlBuilder;
+import com.android.tools.build.bundletool.model.VariantKey;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.google.common.collect.ImmutableList;
+import com.google.common.io.ByteSource;
 import java.util.Collection;
 import java.util.stream.Stream;
 
@@ -47,62 +47,58 @@ public class SplitsXmlInjector {
   private static final String XML_PATH_PATTERN = "res/xml/splits%s.xml";
   private static final String METADATA_KEY = "com.android.vending.splits";
 
-  public GeneratedApks process(GeneratedApks generatedApks) {
-    // A variant is a set of APKs. One device is guaranteed to receive only APKs from the same. This
-    // is why we are processing split.xml for each variant separately.
-    return GeneratedApks.fromModuleSplits(
-        generatedApks.getAllApksGroupedByOrderedVariants().asMap().entrySet().stream()
-            .map(
-                keySplit -> {
-                  switch (keySplit.getKey().getSplitType()) {
-                    case SYSTEM:
-                      // Injection for system APK variant is same as split APK variant as both
-                      // contain single base-master split which is always installed and additional
-                      // splits. In case of system APK variant base-master split is the fused system
-                      // split and splits are unmatched language splits.
-                    case SPLIT:
-                      return processSplitApkVariant(keySplit.getValue());
-                    case STANDALONE:
-                      return keySplit.getValue().stream()
-                          .map(this::processStandaloneVariant)
-                          .collect(toImmutableList());
-                    case INSTANT:
-                      return keySplit.getValue();
-                    case ASSET_SLICE:
-                      throw new IllegalStateException("Unexpected Asset Slice inside variant.");
-                  }
-                  throw new IllegalStateException(
-                      String.format("Unknown split type %s", keySplit.getKey().getSplitType()));
-                })
-            .flatMap(Collection::stream)
-            .collect(toImmutableList()));
+  public ImmutableList<ModuleSplit> process(VariantKey variantKey, Collection<ModuleSplit> splits) {
+    switch (variantKey.getSplitType()) {
+      case SYSTEM:
+        // Injection for system APK variant is same as split APK variant as both
+        // contain single base-master split which is always installed and additional
+        // splits. In case of system APK variant base-master split is the fused system
+        // split and splits are unmatched language splits.
+      case SPLIT:
+        return processSplitApkVariant(splits);
+      case STANDALONE:
+        return splits.stream()
+            .map(SplitsXmlInjector::processStandaloneVariant)
+            .collect(toImmutableList());
+      case STANDALONE_FEATURE_MODULE:
+        return splits.stream()
+            .map(split -> split.isBaseModuleSplit() ? processStandaloneVariant(split) : split)
+            .collect(toImmutableList());
+      case INSTANT:
+      case ARCHIVE:
+        return ImmutableList.copyOf(splits);
+      case ASSET_SLICE:
+        throw new IllegalStateException("Unexpected Asset Slice inside variant.");
+    }
+    throw new IllegalStateException(
+        String.format("Unknown split type %s", variantKey.getSplitType()));
   }
 
-  private ModuleSplit processStandaloneVariant(ModuleSplit split) {
+  private static ModuleSplit processStandaloneVariant(ModuleSplit split) {
     if (!split.getResourceTable().isPresent()) {
       return split;
     }
 
     SplitsProtoXmlBuilder splitsProtoXmlBuilder = new SplitsProtoXmlBuilder();
-    ResourcesUtils.getAllLanguages(split.getResourceTable().get()).stream()
-        .filter(language -> !language.isEmpty())
-        .forEach(
-            language ->
-                splitsProtoXmlBuilder.addLanguageMapping(
-                    split.getModuleName(), language, /* splitId= */ ""));
+    addLanguageSplitsFromResourceTable(splitsProtoXmlBuilder, split);
     return injectSplitsXml(split, splitsProtoXmlBuilder.build());
   }
 
-  private ImmutableList<ModuleSplit> processSplitApkVariant(Collection<ModuleSplit> splits) {
-    SplitsProtoXmlBuilder splitsProtoXmlBuilder = new SplitsProtoXmlBuilder();
-    for (ModuleSplit split : splits) {
-      String splitId = split.getAndroidManifest().getSplitId().orElse("");
-      for (String language : split.getApkTargeting().getLanguageTargeting().getValueList()) {
-        splitsProtoXmlBuilder.addLanguageMapping(split.getModuleName(), language, splitId);
-      }
-    }
+  private static ImmutableList<ModuleSplit> processSplitApkVariant(Collection<ModuleSplit> splits) {
+    boolean hasLanguageSplits =
+        splits.stream().anyMatch(split -> split.getApkTargeting().hasLanguageTargeting());
 
-    XmlNode splitsXmlContent = splitsProtoXmlBuilder.build();
+    // If language splits are available we gather language mappings from these splits otherwise this
+    // means that language splits are not generated and we need to gather all languages from
+    // resource table of master splits.
+    // We need to check splits targeting and can not rely on disabled language dimension because in
+    // case of system variant it is possible to generate splits that don't have language targeting
+    // for bundles with enabled language dimension.
+    XmlNode splitsXmlContent =
+        hasLanguageSplits
+            ? getSplitsXmlContentFromLanguageTargeting(splits)
+            : getSplitsXmlContentFromResourceTables(splits);
+
     ImmutableList.Builder<ModuleSplit> result = new ImmutableList.Builder<>();
 
     for (ModuleSplit split : splits) {
@@ -115,20 +111,55 @@ public class SplitsXmlInjector {
     return result.build();
   }
 
-  private ModuleSplit injectSplitsXml(ModuleSplit split, XmlNode xmlNode) {
+  private static XmlNode getSplitsXmlContentFromLanguageTargeting(Collection<ModuleSplit> splits) {
+    SplitsProtoXmlBuilder splitsProtoXmlBuilder = new SplitsProtoXmlBuilder();
+    for (ModuleSplit split : splits) {
+      String splitId = split.getAndroidManifest().getSplitId().orElse("");
+      for (String language : split.getApkTargeting().getLanguageTargeting().getValueList()) {
+        splitsProtoXmlBuilder.addLanguageMapping(split.getModuleName(), language, splitId);
+      }
+    }
+    return splitsProtoXmlBuilder.build();
+  }
+
+  private static XmlNode getSplitsXmlContentFromResourceTables(Collection<ModuleSplit> splits) {
+    SplitsProtoXmlBuilder splitsProtoXmlBuilder = new SplitsProtoXmlBuilder();
+    splits.stream()
+        .filter(ModuleSplit::isMasterSplit)
+        .forEach(split -> addLanguageSplitsFromResourceTable(splitsProtoXmlBuilder, split));
+    return splitsProtoXmlBuilder.build();
+  }
+
+  private static void addLanguageSplitsFromResourceTable(
+      SplitsProtoXmlBuilder splitsProtoXmlBuilder, ModuleSplit split) {
+    if (!split.getResourceTable().isPresent()) {
+      return;
+    }
+    String splitId = split.getAndroidManifest().getSplitId().orElse("");
+    ResourcesUtils.getAllLanguages(split.getResourceTable().get()).stream()
+        .filter(language -> !language.isEmpty())
+        .forEach(
+            language ->
+                splitsProtoXmlBuilder.addLanguageMapping(split.getModuleName(), language, splitId));
+  }
+
+  private static ModuleSplit injectSplitsXml(ModuleSplit split, XmlNode xmlNode) {
     ZipPath resourcePath = getUniqueResourcePath(split);
 
     ResourceInjector resourceInjector = ResourceInjector.fromModuleSplit(split);
     ResourceId resourceId =
         resourceInjector.addResource(XML_TYPE_NAME, createXmlEntry(resourcePath));
 
-    return split
-        .toBuilder()
+    return split.toBuilder()
         .setResourceTable(resourceInjector.build())
         .setEntries(
             ImmutableList.<ModuleEntry>builder()
                 .addAll(split.getEntries())
-                .add(InMemoryModuleEntry.ofFile(resourcePath, xmlNode.toByteArray()))
+                .add(
+                    ModuleEntry.builder()
+                        .setPath(resourcePath)
+                        .setContent(ByteSource.wrap(xmlNode.toByteArray()))
+                        .build())
                 .build())
         .setAndroidManifest(
             split

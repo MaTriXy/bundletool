@@ -21,6 +21,7 @@ import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.andr
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFeatureCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstallTimeDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstant;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withIsolatedSplits;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withOnDemandAttribute;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withOnDemandDelivery;
@@ -31,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.aapt.Resources.XmlNode;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
@@ -57,9 +58,9 @@ public class ModuleDependencyValidatorTest {
     ImmutableList<BundleModule> allModules =
         ImmutableList.of(module("not_base", androidManifest(PKG_NAME, withSplitId("not_base"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception).hasMessageThat().contains("Mandatory 'base' module is missing");
@@ -97,9 +98,9 @@ public class ModuleDependencyValidatorTest {
             module("base", androidManifest(PKG_NAME)),
             module("feature", androidManifest(PKG_NAME, withUsesSplit("feature"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception).hasMessageThat().contains("depends on itself");
@@ -113,9 +114,9 @@ public class ModuleDependencyValidatorTest {
             module("feature", androidManifest(PKG_NAME)), // implicitly depends on base
             module("sub_feature", androidManifest(PKG_NAME, withUsesSplit("feature", "feature"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -130,9 +131,9 @@ public class ModuleDependencyValidatorTest {
             module("base", androidManifest(PKG_NAME)),
             module("featureA", androidManifest(PKG_NAME, withUsesSplit("unknown"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -149,15 +150,15 @@ public class ModuleDependencyValidatorTest {
             module("module2", androidManifest(PKG_NAME, withUsesSplit("module3"))),
             module("module3", androidManifest(PKG_NAME, withUsesSplit("module1"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception).hasMessageThat().contains("Found cyclic dependency between modules");
   }
 
-  private BundleModule module(String moduleName, XmlNode manifest) throws IOException {
+  private static BundleModule module(String moduleName, XmlNode manifest) throws IOException {
     return new BundleModuleBuilder(moduleName).setManifest(manifest).build();
   }
 
@@ -169,9 +170,9 @@ public class ModuleDependencyValidatorTest {
             module("feature1", androidManifest(PKG_NAME, withOnDemandAttribute(true))),
             module("feature2", androidManifest(PKG_NAME, withUsesSplit("feature1"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -260,9 +261,9 @@ public class ModuleDependencyValidatorTest {
                 "feature2",
                 androidManifest(PKG_NAME, withOnDemandAttribute(true), withMinSdkVersion(20))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -285,9 +286,9 @@ public class ModuleDependencyValidatorTest {
                 "feature2",
                 androidManifest(PKG_NAME, withOnDemandAttribute(true), withMinSdkVersion(20))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -328,9 +329,9 @@ public class ModuleDependencyValidatorTest {
             module("base", androidManifest(PKG_NAME, withMinSdkVersion(20))),
             module("feature1", androidManifest(PKG_NAME, withMinSdkVersion(21))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -347,9 +348,9 @@ public class ModuleDependencyValidatorTest {
             module("base", androidManifest(PKG_NAME, withMinSdkVersion(20))),
             module("feature1", androidManifest(PKG_NAME, withMinSdkVersion(19))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -376,9 +377,9 @@ public class ModuleDependencyValidatorTest {
             module("base", androidManifest(PKG_NAME, withMinSdkVersion(20))),
             module("feature1", androidManifest(PKG_NAME)));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -425,7 +426,7 @@ public class ModuleDependencyValidatorTest {
   }
 
   @Test
-  public void validateAllModules_conditionalModule_dependsOnSomething_throws() throws Exception {
+  public void validateAllModules_conditionalModule_dependsOnConditional_throws() throws Exception {
     ImmutableList<BundleModule> allModules =
         ImmutableList.of(
             module("base", androidManifest(PKG_NAME)),
@@ -439,15 +440,32 @@ public class ModuleDependencyValidatorTest {
                 "conditional2",
                 androidManifest(PKG_NAME, withFeatureCondition("android.feature2"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
     assertThat(exception)
         .hasMessageThat()
         .contains(
-            "Conditional module 'conditional' cannot have dependencies but uses module "
-                + "'conditional2'");
+            "Conditional module 'conditional' cannot depend on a module 'conditional2' that is "
+                + "not install-time.");
+  }
+
+  @Test
+  public void validateAllModules_conditionalModule_dependsOnInstallTime_succeeds()
+      throws Exception {
+    ImmutableList<BundleModule> allModules =
+        ImmutableList.of(
+            module("base", androidManifest(PKG_NAME)),
+            module(
+                "conditional",
+                androidManifest(
+                    PKG_NAME,
+                    withFeatureCondition("android.feature"),
+                    withUsesSplit("installTime"))),
+            module("installTime", androidManifest(PKG_NAME, withInstallTimeDelivery())));
+
+    new ModuleDependencyValidator().validateAllModules(allModules);
   }
 
   @Test
@@ -461,9 +479,9 @@ public class ModuleDependencyValidatorTest {
             module(
                 "conditional", androidManifest(PKG_NAME, withFeatureCondition("android.feature"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
     assertThat(exception)
         .hasMessageThat()
@@ -483,9 +501,9 @@ public class ModuleDependencyValidatorTest {
             module(
                 "conditional", androidManifest(PKG_NAME, withFeatureCondition("android.feature"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
     assertThat(exception)
         .hasMessageThat()
@@ -504,9 +522,9 @@ public class ModuleDependencyValidatorTest {
                     PKG_NAME, withOnDemandDelivery(), withUsesSplit("feature"))),
             module("feature", androidManifest(PKG_NAME, withOnDemandDelivery())));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
     assertThat(exception)
         .hasMessageThat()
@@ -525,9 +543,9 @@ public class ModuleDependencyValidatorTest {
                 "feature",
                 androidManifest(PKG_NAME, withOnDemandDelivery(), withUsesSplit("asset"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
     assertThat(exception)
         .hasMessageThat()
@@ -546,9 +564,9 @@ public class ModuleDependencyValidatorTest {
                 "feature2",
                 androidManifest(PKG_NAME, withUsesSplit("feature1"), withInstant(true))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -570,9 +588,9 @@ public class ModuleDependencyValidatorTest {
                 "feature2",
                 androidManifest(PKG_NAME, withUsesSplit("feature1"), withInstant(true))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -595,9 +613,9 @@ public class ModuleDependencyValidatorTest {
                 "feature2",
                 androidManifest(PKG_NAME, withUsesSplit("feature1"), withInstant(true))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> new ModuleDependencyValidator().validateAllModules(allModules));
 
     assertThat(exception)
@@ -617,5 +635,52 @@ public class ModuleDependencyValidatorTest {
                 androidManifest(PKG_NAME, withInstant(true), withUsesSplit("feature1"))));
 
     new ModuleDependencyValidator().validateAllModules(allModules);
+  }
+
+  @Test
+  public void validateAllModules_isolatedSplitsWithSingleModuleDependency_succeeds()
+      throws Exception {
+    ImmutableList<BundleModule> allModules =
+        ImmutableList.of(
+            module("base", androidManifest(PKG_NAME, withInstant(true), withIsolatedSplits(true))),
+            module("feature1", androidManifest(PKG_NAME, withInstant(true))),
+            module(
+                "feature2",
+                androidManifest(PKG_NAME, withInstant(true), withUsesSplit("feature1"))),
+            module(
+                "feature3",
+                androidManifest(PKG_NAME, withInstant(true), withUsesSplit("feature1"))));
+
+    new ModuleDependencyValidator().validateAllModules(allModules);
+  }
+
+  @Test
+  public void validateAllModules_isolatedSplitsWithMultipleModuleDependencies_throws()
+      throws Exception {
+    ImmutableList<BundleModule> allModules =
+        ImmutableList.of(
+            module("base", androidManifest(PKG_NAME, withInstant(true), withIsolatedSplits(true))),
+            module("feature1", androidManifest(PKG_NAME, withInstant(true))),
+            module(
+                "feature2",
+                androidManifest(PKG_NAME, withInstant(true), withUsesSplit("feature1"))),
+            module(
+                "feature3",
+                androidManifest(
+                    PKG_NAME,
+                    withInstant(true),
+                    withUsesSplit("feature1"),
+                    withUsesSplit("feature2"))));
+
+    InvalidBundleException exception =
+        assertThrows(
+            InvalidBundleException.class,
+            () -> new ModuleDependencyValidator().validateAllModules(allModules));
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains(
+            "Isolated module 'feature3' cannot depend on more than one other module, "
+                + "but it depends on [feature1, feature2].");
   }
 }

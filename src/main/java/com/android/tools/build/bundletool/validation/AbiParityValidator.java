@@ -21,13 +21,13 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.tools.build.bundletool.model.AbiName;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.targeting.TargetedDirectorySegment;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import java.util.Set;
 
-/** Validates that all modules, that contain some native libraries, support the same set of ABIs. */
+/** Validates that all modules that contain some native libraries support the same set of ABIs. */
 public class AbiParityValidator extends SubValidator {
 
   @Override
@@ -45,8 +45,8 @@ public class AbiParityValidator extends SubValidator {
         referentialModule = module;
         referentialAbis = moduleAbis;
       } else if (!referentialAbis.equals(moduleAbis)) {
-        throw ValidationException.builder()
-            .withMessage(
+        throw InvalidBundleException.builder()
+            .withUserMessage(
                 "All modules with native libraries must support the same set of ABIs, but"
                     + " module '%s' supports '%s' and module '%s' supports '%s'.",
                 referentialModule.getName(), referentialAbis, module.getName(), moduleAbis)
@@ -59,11 +59,11 @@ public class AbiParityValidator extends SubValidator {
     return module
         .findEntriesUnderPath(BundleModule.LIB_DIRECTORY)
         // From "lib/<dir>/..." extract the "<dir>" part.
-        .map(entry -> entry.getPath().getName(1))
+        .map(entry -> entry.getPath().getName(1).toString())
         // Extract ABI from the directory name.
         .map(TargetedDirectorySegment::parse)
         .map(TargetedDirectorySegment::getName)
-        .map(abi -> AbiName.fromPlatformName(abi).get().toProto())
+        .map(subDir -> AbiName.fromLibSubDirName(subDir).get().toProto())
         .collect(toImmutableSet());
   }
 }

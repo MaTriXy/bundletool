@@ -17,9 +17,10 @@
 package com.android.tools.build.bundletool.validation;
 
 import com.android.tools.build.bundletool.model.AppBundle;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.BundleModule;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import java.util.zip.ZipFile;
 
 /** Validates the files and configuration for the bundle. */
@@ -27,13 +28,15 @@ public class AppBundleValidator {
 
   /** Validators run on the bundle zip file. */
   @VisibleForTesting
-  static final ImmutableList<SubValidator> BUNDLE_FILE_SUB_VALIDATORS =
+  static final ImmutableList<SubValidator> DEFAULT_BUNDLE_FILE_SUB_VALIDATORS =
       // Keep order of common validators in sync with BundleModulesValidator.
-      ImmutableList.of(new BundleZipValidator(), new MandatoryFilesPresenceValidator());
+      ImmutableList.of(
+          new BundleZipValidator(),
+          new MandatoryFilesPresenceValidator(AppBundle.NON_MODULE_DIRECTORIES));
 
   /** Validators run on the internal representation of bundle and bundle modules. */
   @VisibleForTesting
-  static final ImmutableList<SubValidator> BUNDLE_SUB_VALIDATORS =
+  static final ImmutableList<SubValidator> DEFAULT_BUNDLE_SUB_VALIDATORS =
       // Keep order of common validators in sync with BundleModulesValidator.
       ImmutableList.of(
           // Fundamental file validations first.
@@ -41,37 +44,87 @@ public class AppBundleValidator {
           new ModuleNamesValidator(),
           new AndroidManifestValidator(),
           new BundleConfigValidator(),
+          new DeviceGroupConfigValidator(),
           // More specific file validations.
           new EntryClashValidator(),
+          new NestedTargetingValidator(),
           new AbiParityValidator(),
+          new TextureCompressionFormatParityValidator(),
+          new DeviceGroupParityValidator(),
+          new DeviceTierParityValidator(),
+          new CountrySetParityValidator(),
           new DexFilesValidator(),
           new ApexBundleValidator(),
+          new AssetBundleValidator(),
           // Targeting validations.
           new AssetsTargetingValidator(),
           new NativeTargetingValidator(),
+          new DeviceGroupTargetingValidator(),
           // Other.
+          new ArchiveEntriesValidator(),
           new ModuleDependencyValidator(),
           new ModuleTitleValidator(),
           new ResourceTableValidator(),
-          new AssetModuleFilesValidator());
+          new AssetModuleFilesValidator(),
+          new CodeTransparencyValidator(),
+          new RuntimeEnabledSdkConfigValidator(),
+          new RuntimeEnabledSdkManifestCompatibilityValidator(),
+          new DeclarativeWatchFaceBundleValidator(),
+          new StandaloneFeatureModulesValidator());
+
+  private final ImmutableList<SubValidator> allBundleSubValidators;
+  private final ImmutableList<SubValidator> allBundleFileSubValidators;
+
+  private AppBundleValidator(
+      ImmutableList<SubValidator> allBundleSubValidators,
+      ImmutableList<SubValidator> allBundleFileSubValidators) {
+    this.allBundleSubValidators = allBundleSubValidators;
+    this.allBundleFileSubValidators = allBundleFileSubValidators;
+  }
+
+  public static AppBundleValidator create() {
+    return create(ImmutableList.of());
+  }
+
+  public static AppBundleValidator create(ImmutableList<SubValidator> extraSubValidators) {
+    AppBundleValidator validator =
+        new AppBundleValidator(
+            ImmutableList.<SubValidator>builder()
+                .addAll(DEFAULT_BUNDLE_SUB_VALIDATORS)
+                .addAll(extraSubValidators)
+                .build(),
+            ImmutableList.<SubValidator>builder()
+                .addAll(DEFAULT_BUNDLE_FILE_SUB_VALIDATORS)
+                .addAll(extraSubValidators)
+                .build());
+    return validator;
+  }
 
   /**
-   * Validates the given App Bundle zip file.
+   * Validates the given app bundle zip file.
    *
    * <p>Note that this method performs different checks than {@link #validate(AppBundle)}.
    */
   public void validateFile(ZipFile bundleFile) {
-    new ValidatorRunner(BUNDLE_FILE_SUB_VALIDATORS).validateBundleZipFile(bundleFile);
+    new ValidatorRunner(allBundleFileSubValidators).validateBundleZipFile(bundleFile);
   }
 
   /**
-   * Validates the given App Bundle.
+   * Validates the given app bundle.
    *
    * <p>Note that this method performs different checks than {@link #validateFile(ZipFile)}.
    *
    * @throws ValidationException If the bundle is invalid.
    */
   public void validate(AppBundle bundle) {
-    new ValidatorRunner(BUNDLE_SUB_VALIDATORS).validateBundle(bundle);
+    new ValidatorRunner(allBundleSubValidators).validateBundle(bundle);
+  }
+
+  /**
+   * Validates the given app bundle in combination with the SDK bundles/archives the app depends on.
+   */
+  public void validateBundleWithSdkModules(
+      AppBundle bundle, ImmutableMap<String, BundleModule> sdkModules) {
+    new ValidatorRunner(allBundleSubValidators).validateBundleWithSdkModules(bundle, sdkModules);
   }
 }

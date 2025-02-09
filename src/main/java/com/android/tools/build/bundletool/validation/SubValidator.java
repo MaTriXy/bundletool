@@ -18,36 +18,51 @@ package com.android.tools.build.bundletool.validation;
 
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
+import com.android.tools.build.bundletool.model.SdkBundle;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Validates a particular property of the {@link AppBundle}.
+ * Validates a particular property of the bundle.
  *
  * <p>Sub-classes override some of the methods that is/are most convenient for the particular type
  * of validation.
  */
-abstract class SubValidator {
+public abstract class SubValidator {
 
-  // Validations of the App Bundle module zip file.
+  // Validations of the app bundle module zip file.
 
   public void validateModuleZipFile(ZipFile moduleFile) {}
 
-  // Validations of the App Bundle zip file.
+  // Validations of the bundle zip file.
 
   public void validateBundleZipFile(ZipFile bundleFile) {}
 
   public void validateBundleZipEntry(ZipFile bundleFile, ZipEntry zipEntry) {}
 
-  // Validations of the AppBundle object and it's internals.
+  /** Validates the given SDK modules zip file. */
+  public void validateSdkModulesZipFile(ZipFile modulesFile) {}
 
+  // Validations of the AppBundle object and its internals.
+
+  /** Validates an AppBundle object. */
   public void validateBundle(AppBundle bundle) {}
+
+  /**
+   * Validates an AppBundle object in combination with the SDK bundles/archives the app depends on.
+   */
+  public void validateBundleWithSdkModules(
+      AppBundle bundle, ImmutableMap<String, BundleModule> sdkModules) {}
 
   public void validateAllModules(ImmutableList<BundleModule> modules) {}
 
   public void validateModule(BundleModule module) {}
+
+  /** Validates an SdkBundle object. */
+  public void validateSdkBundle(SdkBundle bundle) {}
 
   /**
    * Validates path of the file.

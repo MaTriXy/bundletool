@@ -17,17 +17,21 @@
 package com.android.tools.build.bundletool.model;
 
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeModuleTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleDeviceGroupsTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleExcludeCountriesTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleFeatureTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleIncludeCountriesTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleMaxSdkVersionTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleMinMaxSdkVersionTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.moduleMinSdkVersionTargeting;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.bundle.Targeting.ModuleTargeting;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -45,7 +49,7 @@ public class ModuleConditionsTest {
     builder.addDeviceFeatureCondition(
         DeviceFeatureCondition.create("com.android.feature", /* version= */ Optional.of(2)));
 
-    ValidationException exception = assertThrows(ValidationException.class, () -> builder.build());
+    InvalidBundleException exception = assertThrows(InvalidBundleException.class, builder::build);
 
     assertThat(exception)
         .hasMessageThat()
@@ -67,6 +71,23 @@ public class ModuleConditionsTest {
 
     ModuleTargeting moduleTargeting = moduleConditions.toTargeting();
     assertThat(moduleTargeting).isEqualTo(moduleMinSdkVersionTargeting(26));
+  }
+
+  @Test
+  public void toTargeting_maxSdkVersion() {
+    ModuleConditions moduleConditions = ModuleConditions.builder().setMaxSdkVersion(26).build();
+
+    ModuleTargeting moduleTargeting = moduleConditions.toTargeting();
+    assertThat(moduleTargeting).isEqualTo(moduleMaxSdkVersionTargeting(26));
+  }
+
+  @Test
+  public void toTargeting_minMaxSdkVersions() {
+    ModuleConditions moduleConditions =
+        ModuleConditions.builder().setMinSdkVersion(26).setMaxSdkVersion(28).build();
+
+    ModuleTargeting moduleTargeting = moduleConditions.toTargeting();
+    assertThat(moduleTargeting).isEqualTo(moduleMinMaxSdkVersionTargeting(26, 28));
   }
 
   @Test
@@ -97,6 +118,20 @@ public class ModuleConditionsTest {
     assertThat(moduleTargeting)
         .ignoringRepeatedFieldOrder()
         .isEqualTo(mergeModuleTargeting(moduleFeatureTargeting("com.feature1", 12)));
+  }
+
+  @Test
+  public void toTargeting_deviceGroupsConditions() {
+    ModuleConditions moduleConditions =
+        ModuleConditions.builder()
+            .setDeviceGroupsCondition(
+                DeviceGroupsCondition.create(ImmutableSet.of("group1", "group2")))
+            .build();
+
+    ModuleTargeting moduleTargeting = moduleConditions.toTargeting();
+    assertThat(moduleTargeting)
+        .ignoringRepeatedFieldOrder()
+        .isEqualTo(moduleDeviceGroupsTargeting("group1", "group2"));
   }
 
   @Test
@@ -138,6 +173,7 @@ public class ModuleConditionsTest {
             .setMinSdkVersion(24)
             .setUserCountriesCondition(
                 UserCountriesCondition.create(ImmutableList.of("FR"), /* exclude= */ false))
+            .setDeviceGroupsCondition(DeviceGroupsCondition.create(ImmutableSet.of("group1")))
             .build();
 
     ModuleTargeting moduleTargeting = moduleConditions.toTargeting();
@@ -148,6 +184,7 @@ public class ModuleConditionsTest {
                 moduleFeatureTargeting("com.feature1"),
                 moduleFeatureTargeting("com.feature2"),
                 moduleMinSdkVersionTargeting(24),
-                moduleIncludeCountriesTargeting("FR")));
+                moduleIncludeCountriesTargeting("FR"),
+                moduleDeviceGroupsTargeting("group1")));
   }
 }

@@ -18,7 +18,9 @@ package com.android.tools.build.bundletool.splitters;
 
 import static com.android.tools.build.bundletool.model.ManifestMutator.withSplitsRequired;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Predicates.not;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 
 import com.android.bundle.Files.Assets;
 import com.android.bundle.Files.TargetedAssetsDirectory;
@@ -28,13 +30,18 @@ import com.android.tools.build.bundletool.mergers.SameTargetingMerger;
 import com.android.tools.build.bundletool.model.ModuleEntry;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.android.tools.build.bundletool.model.ZipPath;
+import com.android.tools.build.bundletool.model.targeting.TargetingDimension;
+import com.android.tools.build.bundletool.model.version.Version;
+import com.android.tools.build.bundletool.shards.SuffixStripper;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 import com.google.protobuf.Message;
 import java.util.Collection;
+import java.util.Optional;
 import java.util.function.Predicate;
 
 /**
@@ -54,10 +61,27 @@ import java.util.function.Predicate;
  * above summation.
  */
 public class AssetsDimensionSplitterFactory {
-
   /**
    * Creates a {@link ModuleSplitSplitter} capable of splitting on a given Asset targeting
    * dimension.
+   *
+   * <p>See {@link #createSplitter(Version, Function, Function, Predicate, Optional)} for parameters
+   * descriptions.
+   */
+  public static <T extends Message> ModuleSplitSplitter createSplitter(
+      Function<AssetsDirectoryTargeting, T> dimensionGetter,
+      Function<T, ApkTargeting> targetingSetter,
+      Predicate<ApkTargeting> hasTargeting) {
+    return createSplitter(
+        dimensionGetter,
+        targetingSetter,
+        hasTargeting,
+        /* targetingDimensionToRemove= */ Optional.empty());
+  }
+
+  /**
+   * Creates a {@link ModuleSplitSplitter} capable of splitting on a given Asset targeting
+   * dimension, with, optionally, a dimension to be removed from asset paths.
    *
    * @param <T> the proto buffer message class representing the splitting targeting dimension.
    * @param dimensionGetter function that extracts the sub-message representing a targeting
@@ -66,12 +90,15 @@ public class AssetsDimensionSplitterFactory {
    *     targeting of the input {@link ModuleSplit}.
    * @param hasTargeting predicate to test if the input {@link ModuleSplit} is already targeting on
    *     the dimension of this splitter.
+   * @param targetingDimensionToRemove If not empty, the targeting for this dimension will be
+   *     removed from asset paths (i.e: suffixes like #tcf_xxx will be removed from paths).
    * @return {@link ModuleSplitSplitter} for a given dimension functions.
    */
   public static <T extends Message> ModuleSplitSplitter createSplitter(
       Function<AssetsDirectoryTargeting, T> dimensionGetter,
       Function<T, ApkTargeting> targetingSetter,
-      Predicate<ApkTargeting> hasTargeting) {
+      Predicate<ApkTargeting> hasTargeting,
+      Optional<TargetingDimension> targetingDimensionToRemove) {
     return new ModuleSplitSplitter() {
 
       @Override
@@ -83,34 +110,71 @@ public class AssetsDimensionSplitterFactory {
         return split
             .getAssetsConfig()
             .map(assetsConfig -> splitAssetsDirectories(assetsConfig, split))
-            .orElse(ImmutableList.of(split));
+            .orElse(ImmutableList.of(split))
+            .stream()
+            .map(
+                moduleSplit ->
+                    moduleSplit.isMasterSplit() ? moduleSplit : removeAssetsTargeting(moduleSplit))
+            .collect(toImmutableList());
+      }
+
+      private ModuleSplit removeAssetsTargeting(ModuleSplit split) {
+        return targetingDimensionToRemove.isPresent()
+            ? SuffixStripper.createForDimension(targetingDimensionToRemove.get())
+                .removeAssetsTargeting(split)
+            : split;
       }
 
       private ImmutableList<ModuleSplit> splitAssetsDirectories(Assets assets, ModuleSplit split) {
         Multimap<T, TargetedAssetsDirectory> directoriesMap =
-            Multimaps.index(
-                assets.getDirectoryList(),
-                targetedDirectory -> dimensionGetter.apply(targetedDirectory.getTargeting()));
-        return directoriesMap.asMap().entrySet().stream()
-            .map(
+            Multimaps.filterKeys(
+                Multimaps.index(
+                    assets.getDirectoryList(),
+                    targetedDirectory -> dimensionGetter.apply(targetedDirectory.getTargeting())),
+                not(this::isDefaultTargeting));
+        ImmutableList.Builder<ModuleSplit> splitsBuilder = new ImmutableList.Builder<>();
+        // Generate config splits.
+        directoriesMap
+            .asMap()
+            .entrySet()
+            .forEach(
                 entry -> {
+                  ImmutableList<ModuleEntry> entries =
+                      listEntriesFromDirectories(entry.getValue(), split);
+                  if (entries.isEmpty()) {
+                    return;
+                  }
                   ModuleSplit.Builder modifiedSplit = split.toBuilder();
 
-                  boolean isMasterSplit =
-                      split.isMasterSplit() && isDefaultTargeting(entry.getKey());
-
                   modifiedSplit
-                      .setEntries(findEntriesInDirectories(entry.getValue(), split))
+                      .setEntries(entries)
                       .setApkTargeting(generateTargeting(split.getApkTargeting(), entry.getKey()))
-                      .setMasterSplit(isMasterSplit);
-                  if (!isMasterSplit) {
-                    modifiedSplit.addMasterManifestMutator(withSplitsRequired(true));
-                  }
+                      .setMasterSplit(false)
+                      .addMasterManifestMutator(withSplitsRequired(true));
 
-                  return modifiedSplit.build();
-                })
-            .filter(moduleSplit -> !moduleSplit.getEntries().isEmpty())
-            .collect(toImmutableList());
+                  splitsBuilder.add(modifiedSplit.build());
+                });
+        // Ensure that master split (even an empty one) always exists.
+        ModuleSplit defaultSplit = getDefaultAssetsSplit(split, splitsBuilder.build());
+        if (defaultSplit.isMasterSplit() || !defaultSplit.getEntries().isEmpty()) {
+          splitsBuilder.add(defaultSplit);
+        }
+        return splitsBuilder.build();
+      }
+
+      private ModuleSplit getDefaultAssetsSplit(
+          ModuleSplit inputSplit, ImmutableList<ModuleSplit> configSplits) {
+        ImmutableSet<ModuleEntry> claimedEntries =
+            configSplits.stream()
+                .map(ModuleSplit::getEntries)
+                .flatMap(Collection::stream)
+                .collect(toImmutableSet());
+        return inputSplit.toBuilder()
+            .setEntries(
+                inputSplit.getEntries().stream()
+                    .filter(not(claimedEntries::contains))
+                    .collect(toImmutableList()))
+            .build();
       }
 
       private boolean isDefaultTargeting(T splittingDimensionTargeting) {
@@ -125,7 +189,7 @@ public class AssetsDimensionSplitterFactory {
         return splitTargeting.toBuilder().mergeFrom(targetingSetter.apply(extraTargeting)).build();
       }
 
-      private ImmutableList<ModuleEntry> findEntriesInDirectories(
+      private ImmutableList<ModuleEntry> listEntriesFromDirectories(
           Collection<TargetedAssetsDirectory> directories, ModuleSplit moduleSplit) {
         return directories.stream()
             .map(targetedAssetsDirectory -> ZipPath.create(targetedAssetsDirectory.getPath()))

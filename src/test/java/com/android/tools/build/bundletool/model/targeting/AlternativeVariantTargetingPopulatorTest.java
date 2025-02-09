@@ -17,6 +17,7 @@ package com.android.tools.build.bundletool.model.targeting;
 
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.mergeVariantTargeting;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkRuntimeVariantTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.sdkVersionFrom;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.toAbi;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.toScreenDensity;
@@ -31,7 +32,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.bundle.Targeting.ApkTargeting;
-import com.android.bundle.Targeting.ScreenDensity;
 import com.android.bundle.Targeting.ScreenDensity.DensityAlias;
 import com.android.bundle.Targeting.SdkVersion;
 import com.android.bundle.Targeting.VariantTargeting;
@@ -197,7 +197,7 @@ public class AlternativeVariantTargetingPopulatorTest {
     ImmutableCollection<ModuleSplit> processedShards = processedApks.getStandaloneApks();
     assertThat(processedShards).hasSize(1);
     ImmutableCollection<ModuleSplit> processedInstantSplits = processedApks.getInstantApks();
-    assertThat(processedInstantSplits).isEqualTo(instantSplits);
+    assertThat(processedInstantSplits).containsExactlyElementsIn(instantSplits);
   }
 
   @Test
@@ -219,7 +219,27 @@ public class AlternativeVariantTargetingPopulatorTest {
     assertThat(processedApks.getInstantApks()).isEmpty();
     assertThat(processedApks.getStandaloneApks()).isEmpty();
     assertThat(processedApks.getSplitApks()).isEmpty();
+    assertThat(processedApks.getArchivedApks()).isEmpty();
     assertThat(processedApks.getSystemApks()).isEqualTo(systemSplits);
+  }
+
+  @Test
+  public void archivedApksPassThrough() {
+    VariantTargeting emptySdkTargeting = variantSdkTargeting(SdkVersion.getDefaultInstance());
+    ImmutableList<ModuleSplit> archivedSplits =
+        ImmutableList.of(createModuleSplit(emptySdkTargeting, SplitType.ARCHIVE));
+
+    GeneratedApks generatedApks = GeneratedApks.builder().setArchivedApks(archivedSplits).build();
+
+    GeneratedApks processedApks =
+        AlternativeVariantTargetingPopulator.populateAlternativeVariantTargeting(generatedApks);
+
+    assertThat(processedApks.size()).isEqualTo(1);
+    assertThat(processedApks.getInstantApks()).isEmpty();
+    assertThat(processedApks.getStandaloneApks()).isEmpty();
+    assertThat(processedApks.getSplitApks()).isEmpty();
+    assertThat(processedApks.getSystemApks()).isEmpty();
+    assertThat(processedApks.getArchivedApks()).isEqualTo(archivedSplits);
   }
 
   @Test
@@ -327,8 +347,7 @@ public class AlternativeVariantTargetingPopulatorTest {
   public void screenDensity_alternativesPopulated() throws Exception {
     VariantTargeting ldpiTargeting = variantDensityTargeting(DensityAlias.LDPI);
     VariantTargeting mdpiTargeting = variantDensityTargeting(DensityAlias.MDPI);
-    VariantTargeting defaultDensityTargeting =
-        variantDensityTargeting(ScreenDensity.getDefaultInstance());
+    VariantTargeting hdpiTargeting = variantDensityTargeting(DensityAlias.HDPI);
 
     ImmutableList<ModuleSplit> outputVariants =
         new ScreenDensityAlternativesPopulator()
@@ -336,7 +355,7 @@ public class AlternativeVariantTargetingPopulatorTest {
                 ImmutableList.of(
                     createModuleSplit(ldpiTargeting),
                     createModuleSplit(mdpiTargeting),
-                    createModuleSplit(defaultDensityTargeting)));
+                    createModuleSplit(hdpiTargeting)));
 
     assertThat(outputVariants).hasSize(3);
     ModuleSplit ldpiVariantNew = outputVariants.get(0);
@@ -346,7 +365,7 @@ public class AlternativeVariantTargetingPopulatorTest {
             variantDensityTargeting(
                 toScreenDensity(DensityAlias.LDPI),
                 ImmutableSet.of(
-                    ScreenDensity.getDefaultInstance(), toScreenDensity(DensityAlias.MDPI))));
+                    toScreenDensity(DensityAlias.MDPI), toScreenDensity(DensityAlias.HDPI))));
     ModuleSplit mdpiVariantNew = outputVariants.get(1);
     assertThat(mdpiVariantNew.getVariantTargeting())
         .ignoringRepeatedFieldOrder()
@@ -354,13 +373,13 @@ public class AlternativeVariantTargetingPopulatorTest {
             variantDensityTargeting(
                 toScreenDensity(DensityAlias.MDPI),
                 ImmutableSet.of(
-                    ScreenDensity.getDefaultInstance(), toScreenDensity(DensityAlias.LDPI))));
-    ModuleSplit defaultVariantNew = outputVariants.get(2);
-    assertThat(defaultVariantNew.getVariantTargeting())
+                    toScreenDensity(DensityAlias.LDPI), toScreenDensity(DensityAlias.HDPI))));
+    ModuleSplit hdpiVariantNew = outputVariants.get(2);
+    assertThat(hdpiVariantNew.getVariantTargeting())
         .ignoringRepeatedFieldOrder()
         .isEqualTo(
             variantDensityTargeting(
-                ScreenDensity.getDefaultInstance(),
+                toScreenDensity(DensityAlias.HDPI),
                 ImmutableSet.of(
                     toScreenDensity(DensityAlias.LDPI), toScreenDensity(DensityAlias.MDPI))));
   }
@@ -441,7 +460,7 @@ public class AlternativeVariantTargetingPopulatorTest {
     VariantTargeting marshmallowTargeting = variantSdkTargeting(sdkVersionFrom(23));
 
     ImmutableList<ModuleSplit> outputVariants =
-        new SdkVersionAlternativesPopulator(Optional.of(/* maxSdkVersion= */ 25))
+        new SdkVersionAlternativesPopulator(/* maxSdkVersion= */ Optional.of(25))
             .addAlternativeVariantTargeting(
                 ImmutableList.of(
                     createModuleSplit(lollipopTargeting), createModuleSplit(marshmallowTargeting)));
@@ -458,6 +477,143 @@ public class AlternativeVariantTargetingPopulatorTest {
         .isEqualTo(
             variantSdkTargeting(
                 sdkVersionFrom(23), ImmutableSet.of(sdkVersionFrom(21), sdkVersionFrom(26))));
+  }
+
+  @Test
+  public void sdkRuntimeVariant_correctAlternativeSdkVersionTargetingsPopulated() {
+    SdkVersion lPlusVersion = sdkVersionFrom(Versions.ANDROID_L_API_VERSION);
+    SdkVersion tPlusVersion = sdkVersionFrom(Versions.ANDROID_T_API_VERSION);
+    VariantTargeting lPlusTargeting = variantSdkTargeting(lPlusVersion);
+    VariantTargeting tPlusSdkRuntimeTargeting = sdkRuntimeVariantTargeting(tPlusVersion);
+    VariantTargeting emptySdkTargeting = variantSdkTargeting(SdkVersion.getDefaultInstance());
+
+    // Post-L splits - 1 non-sdk runtime variant, 1 sdk-runtime variant.
+    ImmutableList<ModuleSplit> postLSplits =
+        ImmutableList.of(
+            createModuleSplit(lPlusTargeting), createModuleSplit(tPlusSdkRuntimeTargeting));
+    // 3 density shards.
+    ImmutableList<ModuleSplit> standaloneShards =
+        ImmutableList.of(
+            createStandaloneModuleSplit(
+                mergeVariantTargeting(
+                    emptySdkTargeting, variantDensityTargeting(DensityAlias.MDPI))),
+            createStandaloneModuleSplit(
+                mergeVariantTargeting(
+                    emptySdkTargeting, variantDensityTargeting(DensityAlias.HDPI))),
+            createStandaloneModuleSplit(
+                mergeVariantTargeting(
+                    emptySdkTargeting, variantDensityTargeting(DensityAlias.XHDPI))));
+    GeneratedApks generatedApks =
+        GeneratedApks.builder()
+            .setStandaloneApks(standaloneShards)
+            .setSplitApks(postLSplits)
+            .build();
+
+    GeneratedApks processedApks =
+        AlternativeVariantTargetingPopulator.populateAlternativeVariantTargeting(generatedApks);
+
+    assertThat(processedApks.size()).isEqualTo(5);
+    assertThat(processedApks.getStandaloneApks()).hasSize(3);
+    assertThat(
+            processedApks.getStandaloneApks().stream()
+                .map(ModuleSplit::getVariantTargeting)
+                .collect(toImmutableSet()))
+        .containsExactly(
+            mergeVariantTargeting(
+                variantSdkTargeting(SdkVersion.getDefaultInstance(), ImmutableSet.of(lPlusVersion)),
+                variantDensityTargeting(
+                    DensityAlias.MDPI, ImmutableSet.of(DensityAlias.HDPI, DensityAlias.XHDPI))),
+            mergeVariantTargeting(
+                variantSdkTargeting(SdkVersion.getDefaultInstance(), ImmutableSet.of(lPlusVersion)),
+                variantDensityTargeting(
+                    DensityAlias.HDPI, ImmutableSet.of(DensityAlias.MDPI, DensityAlias.XHDPI))),
+            mergeVariantTargeting(
+                variantSdkTargeting(SdkVersion.getDefaultInstance(), ImmutableSet.of(lPlusVersion)),
+                variantDensityTargeting(
+                    DensityAlias.XHDPI, ImmutableSet.of(DensityAlias.MDPI, DensityAlias.HDPI))));
+    assertThat(processedApks.getSplitApks()).hasSize(2);
+    assertThat(
+            processedApks.getSplitApks().stream()
+                .map(ModuleSplit::getVariantTargeting)
+                .collect(toImmutableSet()))
+        .containsExactly(
+            variantSdkTargeting(lPlusVersion, ImmutableSet.of(SdkVersion.getDefaultInstance())),
+            sdkRuntimeVariantTargeting(tPlusVersion));
+  }
+
+  @Test
+  public void multipleSdkRuntimeVariants_correctAlternativeSdkVersionTargetingsPopulated() {
+    SdkVersion lPlusVersion = sdkVersionFrom(Versions.ANDROID_L_API_VERSION);
+    SdkVersion tPlusVersion = sdkVersionFrom(Versions.ANDROID_T_API_VERSION);
+    SdkVersion uPlusVersion = sdkVersionFrom(Versions.ANDROID_T_API_VERSION + 1);
+    VariantTargeting lPlusTargeting = variantSdkTargeting(lPlusVersion);
+    VariantTargeting tPlusSdkRuntimeTargeting = sdkRuntimeVariantTargeting(tPlusVersion);
+    VariantTargeting uPlusTargeting = variantSdkTargeting(uPlusVersion);
+    VariantTargeting uPlusSdkRuntimeTargeting = sdkRuntimeVariantTargeting(uPlusVersion);
+    VariantTargeting emptySdkTargeting = variantSdkTargeting(SdkVersion.getDefaultInstance());
+
+    // Post-L splits - 2 non-sdk runtime variants, 2 sdk-runtime variants.
+    ImmutableList<ModuleSplit> postLSplits =
+        ImmutableList.of(
+            createModuleSplit(lPlusTargeting),
+            createModuleSplit(tPlusSdkRuntimeTargeting),
+            createModuleSplit(uPlusTargeting),
+            createModuleSplit(uPlusSdkRuntimeTargeting));
+    // 3 density shards.
+    ImmutableList<ModuleSplit> standaloneShards =
+        ImmutableList.of(
+            createStandaloneModuleSplit(
+                mergeVariantTargeting(
+                    emptySdkTargeting, variantDensityTargeting(DensityAlias.MDPI))),
+            createStandaloneModuleSplit(
+                mergeVariantTargeting(
+                    emptySdkTargeting, variantDensityTargeting(DensityAlias.HDPI))),
+            createStandaloneModuleSplit(
+                mergeVariantTargeting(
+                    emptySdkTargeting, variantDensityTargeting(DensityAlias.XHDPI))));
+    GeneratedApks generatedApks =
+        GeneratedApks.builder()
+            .setStandaloneApks(standaloneShards)
+            .setSplitApks(postLSplits)
+            .build();
+
+    GeneratedApks processedApks =
+        AlternativeVariantTargetingPopulator.populateAlternativeVariantTargeting(generatedApks);
+
+    assertThat(processedApks.size()).isEqualTo(7);
+    assertThat(processedApks.getStandaloneApks()).hasSize(3);
+    assertThat(
+            processedApks.getStandaloneApks().stream()
+                .map(ModuleSplit::getVariantTargeting)
+                .collect(toImmutableSet()))
+        .containsExactly(
+            mergeVariantTargeting(
+                variantSdkTargeting(
+                    SdkVersion.getDefaultInstance(), ImmutableSet.of(lPlusVersion, uPlusVersion)),
+                variantDensityTargeting(
+                    DensityAlias.MDPI, ImmutableSet.of(DensityAlias.HDPI, DensityAlias.XHDPI))),
+            mergeVariantTargeting(
+                variantSdkTargeting(
+                    SdkVersion.getDefaultInstance(), ImmutableSet.of(lPlusVersion, uPlusVersion)),
+                variantDensityTargeting(
+                    DensityAlias.HDPI, ImmutableSet.of(DensityAlias.MDPI, DensityAlias.XHDPI))),
+            mergeVariantTargeting(
+                variantSdkTargeting(
+                    SdkVersion.getDefaultInstance(), ImmutableSet.of(lPlusVersion, uPlusVersion)),
+                variantDensityTargeting(
+                    DensityAlias.XHDPI, ImmutableSet.of(DensityAlias.MDPI, DensityAlias.HDPI))));
+    assertThat(processedApks.getSplitApks()).hasSize(4);
+    assertThat(
+            processedApks.getSplitApks().stream()
+                .map(ModuleSplit::getVariantTargeting)
+                .collect(toImmutableSet()))
+        .containsExactly(
+            variantSdkTargeting(
+                lPlusVersion, ImmutableSet.of(SdkVersion.getDefaultInstance(), uPlusVersion)),
+            variantSdkTargeting(
+                uPlusVersion, ImmutableSet.of(SdkVersion.getDefaultInstance(), lPlusVersion)),
+            sdkRuntimeVariantTargeting(tPlusVersion, ImmutableSet.of(uPlusVersion)),
+            sdkRuntimeVariantTargeting(uPlusVersion, ImmutableSet.of(tPlusVersion)));
   }
 
   private static ModuleSplit createStandaloneModuleSplit(VariantTargeting variantTargeting) {

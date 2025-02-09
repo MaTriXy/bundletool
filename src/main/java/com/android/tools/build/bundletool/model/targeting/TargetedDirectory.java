@@ -16,18 +16,22 @@
 
 package com.android.tools.build.bundletool.model.targeting;
 
+import static com.android.tools.build.bundletool.model.targeting.TargetingUtils.extractDimensionTargeting;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.MoreCollectors.toOptional;
 
+import com.android.bundle.Targeting.AssetsDirectoryTargeting;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Streams;
 import com.google.errorprone.annotations.Immutable;
 import java.util.HashSet;
+import java.util.Optional;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 /**
  * Directory with an optional associated targeting.
@@ -72,6 +76,62 @@ public abstract class TargetedDirectory {
   }
 
   /**
+   * Returns the base name of the subpath composed from the first element up to and including the
+   * element that is targeted by the requested targeting dimension.
+   *
+   * <p>Example: given directory a/b/c#tier_1/d/e, a request for DEVICE_TIER returns a/b/c.
+   *
+   * <p>See {@link ZipPath#subpath} and {@link TargetedDirectory#getPathBaseName}.
+   */
+  public String getSubPathBaseName(TargetingDimension dimension) {
+    Optional<Integer> targetedSegmentIndex = getTargetedPathSegmentIndex(dimension);
+    return targetedSegmentIndex.isPresent()
+        ? getSubPathBaseName(targetedSegmentIndex.get())
+        : getPathBaseName();
+  }
+
+  /**
+   * Returns the value of the targeting for the given dimension, if this dimension is targeted by
+   * this directory.
+   *
+   * @param dimension The dimension for which the targeting must be extracted.
+   * @return The targeting for the specified dimension, or an empty optional if not found.
+   */
+  public Optional<AssetsDirectoryTargeting> getTargeting(TargetingDimension dimension) {
+    // We're assuming that dimensions are not duplicated (see checkNoDuplicateDimensions).
+    return getTargeting()
+        .flatMap(directoryTargeting -> extractDimensionTargeting(directoryTargeting, dimension));
+  }
+
+  /** Returns the value of the targeting for this directory. */
+  private Optional<AssetsDirectoryTargeting> getTargeting() {
+    return getPathSegments().stream()
+        .filter(segment -> !segment.getTargetingDimensions().isEmpty())
+        .findFirst()
+        .map(TargetedDirectorySegment::getTargeting);
+  }
+
+  /**
+   * Returns a copy of the TargetedDirectory with a targeting dimension removed.
+   *
+   * @param dimension The dimension to be removed
+   * @return A new TargetedDirectory with the specified dimension removed.
+   */
+  public TargetedDirectory removeTargeting(TargetingDimension dimension) {
+    ImmutableList<TargetedDirectorySegment> newSegments =
+        getPathSegments().stream()
+            .map(segment -> segment.removeTargeting(dimension))
+            .collect(toImmutableList());
+
+    // If no changes are made to any segments, return the original immutable object.
+    if (getPathSegments().equals(newSegments)) {
+      return this;
+    }
+
+    return create(newSegments, originalPath());
+  }
+
+  /**
    * Parses a given path giving back object that can be used to determine the directory targeting.
    *
    * @param directoryPath relative directory inside the App Bundle module.
@@ -80,30 +140,46 @@ public abstract class TargetedDirectory {
     checkArgument(directoryPath.getNameCount() > 0, "Empty paths are not supported.");
 
     ImmutableList<TargetedDirectorySegment> segments =
-        Streams.stream(directoryPath)
-            .map(path -> TargetedDirectorySegment.parse((ZipPath) path))
+        directoryPath.getNames().stream()
+            .map(TargetedDirectorySegment::parse)
             .collect(toImmutableList());
     checkNoDuplicateDimensions(segments, directoryPath);
 
     return TargetedDirectory.create(segments, directoryPath);
   }
 
+  public ZipPath toZipPath() {
+    ImmutableList<String> pathSegments =
+        getPathSegments().stream()
+            .map(TargetedDirectorySegment::toPathSegment)
+            .collect(toImmutableList());
+    return ZipPath.create(pathSegments);
+  }
+
+  private Optional<Integer> getTargetedPathSegmentIndex(TargetingDimension dimension) {
+    // We're assuming that dimensions are not duplicated (see checkNoDuplicateDimensions).
+    return IntStream.range(0, getPathSegments().size())
+        .filter(idx -> getPathSegments().get(idx).getTargetingDimensions().contains(dimension))
+        .boxed()
+        .collect(toOptional());
+  }
+
   private static void checkNoDuplicateDimensions(
       ImmutableList<TargetedDirectorySegment> directorySegments, ZipPath directoryPath) {
     Set<TargetingDimension> coveredDimensions = new HashSet<>();
     for (TargetedDirectorySegment targetedDirectorySegment : directorySegments) {
-      if (targetedDirectorySegment.getTargetingDimension().isPresent()) {
-        TargetingDimension lastSegmentDimension =
-            targetedDirectorySegment.getTargetingDimension().get();
-        if (coveredDimensions.contains(lastSegmentDimension)) {
-          throw ValidationException.builder()
-              .withMessage(
-                  "Duplicate targeting dimension '%s' on path '%s'.",
-                  lastSegmentDimension, directoryPath)
-              .build();
-        }
-        coveredDimensions.add(lastSegmentDimension);
-      }
+      ImmutableList<TargetingDimension> segmentTargetingDimensions =
+          targetedDirectorySegment.getTargetingDimensions();
+      segmentTargetingDimensions.forEach(
+          dimension -> {
+            if (coveredDimensions.contains(dimension)) {
+              throw InvalidBundleException.builder()
+                  .withUserMessage(
+                      "Duplicate targeting dimension '%s' on path '%s'.", dimension, directoryPath)
+                  .build();
+            }
+          });
+      coveredDimensions.addAll(segmentTargetingDimensions);
     }
   }
 

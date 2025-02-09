@@ -16,7 +16,15 @@
 
 package com.android.tools.build.bundletool.model;
 
+import static com.android.tools.build.bundletool.model.AndroidManifest.CONDITIONS_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.CONDITION_USER_COUNTRIES_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.DELIVERY_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.FAST_FOLLOW_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.INSTALL_TIME_ELEMENT_NAME;
+import static com.android.tools.build.bundletool.model.AndroidManifest.ON_DEMAND_ELEMENT_NAME;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withAssetModuleTargeting;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withDeviceGroupsCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withEmptyDeliveryElement;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFastFollowDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFeatureCondition;
@@ -25,22 +33,29 @@ import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.with
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstallTimeDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstantInstallTimeDelivery;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withInstantOnDemandDelivery;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMaxSdkCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withMinSdkVersion;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withOnDemandDelivery;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withUnsupportedAssetModuleTargeting;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withUnsupportedCondition;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withUserCountriesCondition;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
+import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.aapt.Resources.XmlNode;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.bundle.Targeting.AssetModuleTargeting;
+import com.android.bundle.Targeting.DeviceGroupModuleTargeting;
+import com.android.bundle.Targeting.UserCountriesTargeting;
+import com.android.tools.build.bundletool.model.BundleModule.ModuleType;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoAttributeBuilder;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoElement;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoElementBuilder;
 import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoNode;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import java.util.Optional;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -56,8 +71,7 @@ public class ManifestDeliveryElementTest {
   public void emptyDeliveryElement_notWellFormed() {
     Optional<ManifestDeliveryElement> deliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
-            androidManifest("com.test.app", withEmptyDeliveryElement()),
-            /* isFastFollowAllowed= */ false);
+            androidManifest("com.test.app", withEmptyDeliveryElement()), ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isFalse();
@@ -71,8 +85,7 @@ public class ManifestDeliveryElementTest {
   public void installTimeDeliveryOnly() {
     Optional<ManifestDeliveryElement> deliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
-            androidManifest("com.test.app", withInstallTimeDelivery()),
-            /* isFastFollowAllowed= */ false);
+            androidManifest("com.test.app", withInstallTimeDelivery()), ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isTrue();
@@ -86,8 +99,7 @@ public class ManifestDeliveryElementTest {
   public void onDemandDeliveryOnly() {
     Optional<ManifestDeliveryElement> deliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
-            androidManifest("com.test.app", withOnDemandDelivery()),
-            /* isFastFollowAllowed= */ false);
+            androidManifest("com.test.app", withOnDemandDelivery()), ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isFalse();
@@ -101,8 +113,7 @@ public class ManifestDeliveryElementTest {
   public void fastFollowDeliveryOnly_fastFollowAllowed() {
     Optional<ManifestDeliveryElement> deliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
-            androidManifest("com.test.app", withFastFollowDelivery()),
-            /* isFastFollowAllowed= */ true);
+            androidManifest("com.test.app", withFastFollowDelivery()), ModuleType.ASSET_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isFalse();
@@ -117,7 +128,7 @@ public class ManifestDeliveryElementTest {
     Optional<ManifestDeliveryElement> deliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
             androidManifest("com.test.app", withInstallTimeDelivery(), withOnDemandDelivery()),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isTrue();
@@ -136,7 +147,7 @@ public class ManifestDeliveryElementTest {
                 withInstallTimeDelivery(),
                 withOnDemandDelivery(),
                 withFastFollowDelivery()),
-            /* isFastFollowAllowed= */ true);
+            ModuleType.ASSET_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isTrue();
@@ -151,7 +162,7 @@ public class ManifestDeliveryElementTest {
     Optional<ManifestDeliveryElement> deliveryElement =
         ManifestDeliveryElement.instantFromManifestRootNode(
             androidManifest("com.test.app", withInstantOnDemandDelivery()),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isFalse();
@@ -166,7 +177,7 @@ public class ManifestDeliveryElementTest {
     Optional<ManifestDeliveryElement> deliveryElement =
         ManifestDeliveryElement.instantFromManifestRootNode(
             androidManifest("com.test.app", withInstantInstallTimeDelivery()),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
     assertThat(deliveryElement.get().hasInstallTimeElement()).isTrue();
@@ -183,8 +194,9 @@ public class ManifestDeliveryElementTest {
             androidManifest(
                 "com.test.app",
                 withFeatureCondition("android.hardware.camera.ar"),
-                withMinSdkCondition(24)),
-            /* isFastFollowAllowed= */ false);
+                withMinSdkCondition(24),
+                withMaxSdkCondition(27)),
+            ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
 
@@ -195,7 +207,24 @@ public class ManifestDeliveryElementTest {
                 .addDeviceFeatureCondition(
                     DeviceFeatureCondition.create("android.hardware.camera.ar"))
                 .setMinSdkVersion(24)
+                .setMaxSdkVersion(27)
                 .build());
+  }
+
+  @Test
+  public void getModuleConditions_illegalMinMaxSdk() {
+    Optional<ManifestDeliveryElement> deliveryElement =
+        ManifestDeliveryElement.fromManifestRootNode(
+            androidManifest("com.test.app", withMinSdkCondition(27), withMaxSdkCondition(20)),
+            ModuleType.FEATURE_MODULE);
+
+    Throwable exception =
+        assertThrows(
+            InvalidBundleException.class, () -> deliveryElement.get().getModuleConditions());
+
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Illegal SDK-based conditional module targeting");
   }
 
   @Test
@@ -207,7 +236,7 @@ public class ManifestDeliveryElementTest {
                 withFeatureCondition("android.hardware.camera.ar"),
                 withFeatureCondition("android.software.vr.mode"),
                 withMinSdkVersion(24)),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
 
@@ -226,7 +255,7 @@ public class ManifestDeliveryElementTest {
                 "com.test.app",
                 withFeatureConditionHexVersion("android.software.opengl", 0x30000),
                 withFeatureCondition("android.hardware.vr.headtracking", 1)),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
 
     assertThat(deliveryElement).isPresent();
 
@@ -242,13 +271,14 @@ public class ManifestDeliveryElementTest {
     Optional<ManifestDeliveryElement> manifestDeliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
             androidManifest("com.test.app", withFusingAttribute(false), withUnsupportedCondition()),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
 
     assertThat(manifestDeliveryElement).isPresent();
 
     Throwable exception =
         assertThrows(
-            ValidationException.class, () -> manifestDeliveryElement.get().getModuleConditions());
+            InvalidBundleException.class,
+            () -> manifestDeliveryElement.get().getModuleConditions());
     assertThat(exception)
         .hasMessageThat()
         .contains("Unrecognized module condition: 'unsupportedCondition'");
@@ -266,13 +296,14 @@ public class ManifestDeliveryElementTest {
 
     Optional<ManifestDeliveryElement> manifestDeliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
-            createAndroidManifestWithConditions(badCondition), /* isFastFollowAllowed= */ false);
+            createAndroidManifestWithConditions(badCondition), ModuleType.FEATURE_MODULE);
 
     assertThat(manifestDeliveryElement).isPresent();
 
     Throwable exception =
         assertThrows(
-            ValidationException.class, () -> manifestDeliveryElement.get().getModuleConditions());
+            InvalidBundleException.class,
+            () -> manifestDeliveryElement.get().getModuleConditions());
     assertThat(exception)
         .hasMessageThat()
         .contains(
@@ -289,13 +320,14 @@ public class ManifestDeliveryElementTest {
 
     Optional<ManifestDeliveryElement> manifestDeliveryElement =
         ManifestDeliveryElement.fromManifestRootNode(
-            createAndroidManifestWithConditions(badCondition), /* isFastFollowAllowed= */ false);
+            createAndroidManifestWithConditions(badCondition), ModuleType.FEATURE_MODULE);
 
     assertThat(manifestDeliveryElement).isPresent();
 
     Throwable exception =
         assertThrows(
-            ValidationException.class, () -> manifestDeliveryElement.get().getModuleConditions());
+            InvalidBundleException.class,
+            () -> manifestDeliveryElement.get().getModuleConditions());
     assertThat(exception)
         .hasMessageThat()
         .contains("Missing required 'dist:value' attribute in the 'min-sdk' condition element.");
@@ -306,11 +338,11 @@ public class ManifestDeliveryElementTest {
     Optional<ManifestDeliveryElement> element =
         ManifestDeliveryElement.fromManifestRootNode(
             androidManifest("com.test.app", withMinSdkCondition(24), withMinSdkCondition(28)),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
     assertThat(element).isPresent();
 
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> element.get().getModuleConditions());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getModuleConditions());
     assertThat(exception)
         .hasMessageThat()
         .contains("Multiple '<dist:min-sdk>' conditions are not supported.");
@@ -320,42 +352,164 @@ public class ManifestDeliveryElementTest {
   public void moduleConditions_typoInElement_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
-                    XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "install-time")
+                    XmlProtoElementBuilder.create(
+                            DISTRIBUTION_NAMESPACE_URI, INSTALL_TIME_ELEMENT_NAME)
                         .addChildElement(
                             XmlProtoElementBuilder.create(
                                 DISTRIBUTION_NAMESPACE_URI, "condtions"))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ false));
+                    nodeWithTypo, ModuleType.FEATURE_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
         .contains(
-            "Expected <dist:install-time> element to contain only <dist:conditions> "
-                + "element but found: 'condtions' with namespace URI: "
+            "Expected <dist:install-time> element to contain only <dist:conditions> or "
+                + "<dist:removable> element but found: 'condtions' with namespace URI: "
                 + "'http://schemas.android.com/apk/distribution'");
+  }
+
+  @Test
+  public void moduleConditions_deviceGroupsCondition() {
+    Optional<ManifestDeliveryElement> deliveryElement =
+        ManifestDeliveryElement.fromManifestRootNode(
+            androidManifest(
+                "com.test.app", withDeviceGroupsCondition(ImmutableList.of("group1", "group2"))),
+            ModuleType.FEATURE_MODULE);
+
+    assertThat(deliveryElement).isPresent();
+
+    assertThat(deliveryElement.get().hasModuleConditions()).isTrue();
+    assertThat(deliveryElement.get().getModuleConditions().getDeviceGroupsCondition())
+        .hasValue(DeviceGroupsCondition.create(ImmutableSet.of("group1", "group2")));
+  }
+
+  @Test
+  public void moduleConditions_multipleDeviceGroupsCondition_throws() {
+    Optional<ManifestDeliveryElement> element =
+        ManifestDeliveryElement.fromManifestRootNode(
+            androidManifest(
+                "com.test.app",
+                withDeviceGroupsCondition(ImmutableList.of("group1", "group2")),
+                withDeviceGroupsCondition(ImmutableList.of("group3"))),
+            ModuleType.FEATURE_MODULE);
+
+    assertThat(element).isPresent();
+
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getModuleConditions());
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Multiple '<dist:device-groups>' conditions are not supported.");
+  }
+
+  @Test
+  public void moduleConditions_emptyDeviceGroupsCondition_throws() {
+    Optional<ManifestDeliveryElement> element =
+        ManifestDeliveryElement.fromManifestRootNode(
+            androidManifest("com.test.app", withDeviceGroupsCondition(ImmutableList.of())),
+            ModuleType.FEATURE_MODULE);
+
+    assertThat(element).isPresent();
+
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getModuleConditions());
+    assertThat(exception)
+        .hasMessageThat()
+        .contains(
+            "At least one device group should be specified in '<dist:device-groups>' element.");
+  }
+
+  @Test
+  public void moduleConditions_wrongElementInsideDeviceGroupsCondition_throws() {
+    XmlProtoElement badDeviceGroupCondition =
+        XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "device-groups")
+            .addChildElement(XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "wrong"))
+            .build();
+
+    Optional<ManifestDeliveryElement> element =
+        ManifestDeliveryElement.fromManifestRootNode(
+            createAndroidManifestWithConditions(badDeviceGroupCondition),
+            ModuleType.FEATURE_MODULE);
+
+    assertThat(element).isPresent();
+
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getModuleConditions());
+    assertThat(exception)
+        .hasMessageThat()
+        .contains(
+            "Expected only '<dist:device-group>' elements inside '<dist:device-groups>', but found"
+                + " 'wrong'");
+  }
+
+  @Test
+  public void moduleConditions_wrongAttributeInDeviceGroupElement_throws() {
+    XmlProtoElement badDeviceGroupCondition =
+        XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "device-groups")
+            .addChildElement(
+                XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "device-group")
+                    .addAttribute(
+                        XmlProtoAttributeBuilder.create(DISTRIBUTION_NAMESPACE_URI, "groupName")
+                            .setValueAsString("group1")))
+            .build();
+
+    Optional<ManifestDeliveryElement> element =
+        ManifestDeliveryElement.fromManifestRootNode(
+            createAndroidManifestWithConditions(badDeviceGroupCondition),
+            ModuleType.FEATURE_MODULE);
+
+    assertThat(element).isPresent();
+
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getModuleConditions());
+    assertThat(exception)
+        .hasMessageThat()
+        .isEqualTo(
+            "'<dist:device-group>' element is expected to have 'dist:name' attribute but found"
+                + " none.");
+  }
+
+  @Test
+  public void moduleConditions_wrongDeviceGroupName_throws() {
+    Optional<ManifestDeliveryElement> element =
+        ManifestDeliveryElement.fromManifestRootNode(
+            androidManifest(
+                "com.test.app", withDeviceGroupsCondition(ImmutableList.of("group!!!"))),
+            ModuleType.FEATURE_MODULE);
+
+    assertThat(element).isPresent();
+
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getModuleConditions());
+    assertThat(exception)
+        .hasMessageThat()
+        .isEqualTo(
+            "Device group names should start with a letter and contain only "
+                + "letters, numbers and underscores. Found group named 'group!!!' in "
+                + "'<dist:device-group>' element.");
   }
 
   @Test
   public void deliveryElement_typoInChildElement_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
                     XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "instal-time")));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ false));
+                    nodeWithTypo, ModuleType.FEATURE_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
@@ -369,42 +523,44 @@ public class ManifestDeliveryElementTest {
   public void deliveryElement_typoInChildElement_throws_fastFollowEnabled() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
                     XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "instal-time")));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ true));
+                    nodeWithTypo, ModuleType.ASSET_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
         .contains(
-            "Expected <dist:delivery> element to contain only <dist:install-time>, "
-                + "<dist:on-demand>, <dist:fast-follow> elements but found: 'instal-time' "
-                + "with namespace URI: 'http://schemas.android.com/apk/distribution'");
+            "Expected <dist:delivery> element to contain only <dist:install-time>,"
+                + " <dist:on-demand>, <dist:fast-follow>, <dist:conditions> elements but found:"
+                + " 'instal-time' with namespace URI:"
+                + " 'http://schemas.android.com/apk/distribution'");
   }
 
   @Test
   public void fastFollowElement_childElement_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
-                    XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "fast-follow")
+                    XmlProtoElementBuilder.create(
+                            DISTRIBUTION_NAMESPACE_URI, FAST_FOLLOW_ELEMENT_NAME)
                         .addChildElement(
                             XmlProtoElementBuilder.create(
-                                DISTRIBUTION_NAMESPACE_URI, "conditions"))));
+                                DISTRIBUTION_NAMESPACE_URI, CONDITIONS_ELEMENT_NAME))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ true));
+                    nodeWithTypo, ModuleType.ASSET_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
@@ -418,19 +574,20 @@ public class ManifestDeliveryElementTest {
   public void onDemandElement_childElement_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
-                    XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "on-demand")
+                    XmlProtoElementBuilder.create(
+                            DISTRIBUTION_NAMESPACE_URI, ON_DEMAND_ELEMENT_NAME)
                         .addChildElement(
                             XmlProtoElementBuilder.create(
-                                DISTRIBUTION_NAMESPACE_URI, "conditions"))));
+                                DISTRIBUTION_NAMESPACE_URI, CONDITIONS_ELEMENT_NAME))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ false));
+                    nodeWithTypo, ModuleType.FEATURE_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
@@ -444,15 +601,15 @@ public class ManifestDeliveryElementTest {
   public void onDemandElement_missingNamespace_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
-                .addChildElement(XmlProtoElementBuilder.create("on-demand")));
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
+                .addChildElement(XmlProtoElementBuilder.create(ON_DEMAND_ELEMENT_NAME)));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ false));
+                    nodeWithTypo, ModuleType.FEATURE_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
@@ -465,15 +622,15 @@ public class ManifestDeliveryElementTest {
   public void installTimeElement_missingNamespace_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
-                .addChildElement(XmlProtoElementBuilder.create("install-time")));
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
+                .addChildElement(XmlProtoElementBuilder.create(INSTALL_TIME_ELEMENT_NAME)));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ false));
+                    nodeWithTypo, ModuleType.FEATURE_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
@@ -487,34 +644,37 @@ public class ManifestDeliveryElementTest {
   public void conditionsElement_missingNamespace_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
-                    XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "install-time")
-                        .addChildElement(XmlProtoElementBuilder.create("conditions"))));
+                    XmlProtoElementBuilder.create(
+                            DISTRIBUTION_NAMESPACE_URI, INSTALL_TIME_ELEMENT_NAME)
+                        .addChildElement(XmlProtoElementBuilder.create(CONDITIONS_ELEMENT_NAME))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                    nodeWithTypo, /* isFastFollowAllowed= */ false));
+                    nodeWithTypo, ModuleType.FEATURE_MODULE));
 
     assertThat(exception)
         .hasMessageThat()
         .contains(
-            "Expected <dist:install-time> element to contain only <dist:conditions> element but "
-                + "found: 'conditions' with namespace not provided.");
+            "Expected <dist:install-time> element to contain only <dist:conditions> or "
+                + "<dist:removable> element but found: 'conditions' with namespace not provided.");
   }
 
   @Test
   public void minSdkCondition_missingNamespace_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
-                    XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "install-time")
+                    XmlProtoElementBuilder.create(
+                            DISTRIBUTION_NAMESPACE_URI, INSTALL_TIME_ELEMENT_NAME)
                         .addChildElement(
-                            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "conditions")
+                            XmlProtoElementBuilder.create(
+                                    DISTRIBUTION_NAMESPACE_URI, CONDITIONS_ELEMENT_NAME)
                                 .addChildElement(
                                     XmlProtoElementBuilder.create(
                                             DISTRIBUTION_NAMESPACE_URI, "min-sdk")
@@ -522,12 +682,12 @@ public class ManifestDeliveryElementTest {
                                             XmlProtoAttributeBuilder.create("value")
                                                 .setValueAsDecimalInteger(21))))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                        nodeWithTypo, /* isFastFollowAllowed= */ false)
+                        nodeWithTypo, ModuleType.FEATURE_MODULE)
                     .get()
                     .getModuleConditions());
 
@@ -540,11 +700,13 @@ public class ManifestDeliveryElementTest {
   public void deviceFeatureCondition_missingNamespace_throws() {
     XmlNode nodeWithTypo =
         createAndroidManifestWithDeliveryElement(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                 .addChildElement(
-                    XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "install-time")
+                    XmlProtoElementBuilder.create(
+                            DISTRIBUTION_NAMESPACE_URI, INSTALL_TIME_ELEMENT_NAME)
                         .addChildElement(
-                            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "conditions")
+                            XmlProtoElementBuilder.create(
+                                    DISTRIBUTION_NAMESPACE_URI, CONDITIONS_ELEMENT_NAME)
                                 .addChildElement(
                                     XmlProtoElementBuilder.create(
                                             DISTRIBUTION_NAMESPACE_URI, "device-feature")
@@ -552,12 +714,12 @@ public class ManifestDeliveryElementTest {
                                             XmlProtoAttributeBuilder.create("name")
                                                 .setValueAsString("android.hardware.feature"))))));
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 ManifestDeliveryElement.fromManifestRootNode(
-                        nodeWithTypo, /* isFastFollowAllowed= */ false)
+                        nodeWithTypo, ModuleType.FEATURE_MODULE)
                     .get()
                     .getModuleConditions());
 
@@ -571,12 +733,12 @@ public class ManifestDeliveryElementTest {
   public void userCountriesCondition_parsesOk() {
     XmlNode manifest =
         createAndroidManifestWithConditions(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "user-countries")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, CONDITION_USER_COUNTRIES_NAME)
                 .addChildElement(createCountryCodeEntry("pl"))
                 .addChildElement(createCountryCodeEntry("GB"))
                 .build());
     Optional<ManifestDeliveryElement> deliveryElement =
-        ManifestDeliveryElement.fromManifestRootNode(manifest, /* isFastFollowAllowed= */ false);
+        ManifestDeliveryElement.fromManifestRootNode(manifest, ModuleType.FEATURE_MODULE);
     assertThat(deliveryElement).isPresent();
 
     Optional<UserCountriesCondition> userCountriesCondition =
@@ -591,7 +753,7 @@ public class ManifestDeliveryElementTest {
   public void userCountriesCondition_parsesExclusionOk() {
     XmlNode manifest =
         createAndroidManifestWithConditions(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "user-countries")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, CONDITION_USER_COUNTRIES_NAME)
                 .addAttribute(
                     XmlProtoAttributeBuilder.create(DISTRIBUTION_NAMESPACE_URI, "exclude")
                         .setValueAsBoolean(true))
@@ -599,7 +761,7 @@ public class ManifestDeliveryElementTest {
                 .addChildElement(createCountryCodeEntry("SN"))
                 .build());
     Optional<ManifestDeliveryElement> deliveryElement =
-        ManifestDeliveryElement.fromManifestRootNode(manifest, /* isFastFollowAllowed= */ false);
+        ManifestDeliveryElement.fromManifestRootNode(manifest, ModuleType.FEATURE_MODULE);
     assertThat(deliveryElement).isPresent();
 
     Optional<UserCountriesCondition> userCountriesCondition =
@@ -614,7 +776,7 @@ public class ManifestDeliveryElementTest {
   public void userCountriesCondition_badCountryElementName_throws() {
     XmlNode manifest =
         createAndroidManifestWithConditions(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "user-countries")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, CONDITION_USER_COUNTRIES_NAME)
                 .addChildElement(
                     XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "country-typo")
                         .addAttribute(
@@ -622,12 +784,12 @@ public class ManifestDeliveryElementTest {
                                 .setValueAsString("DE")))
                 .build());
     Optional<ManifestDeliveryElement> deliveryElement =
-        ManifestDeliveryElement.fromManifestRootNode(manifest, /* isFastFollowAllowed= */ false);
+        ManifestDeliveryElement.fromManifestRootNode(manifest, ModuleType.FEATURE_MODULE);
     assertThat(deliveryElement).isPresent();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> deliveryElement.get().getModuleConditions().getUserCountriesCondition());
 
     assertThat(exception)
@@ -639,7 +801,7 @@ public class ManifestDeliveryElementTest {
   public void userCountriesCondition_missingCodeAttribute_throws() {
     XmlNode manifest =
         createAndroidManifestWithConditions(
-            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "user-countries")
+            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, CONDITION_USER_COUNTRIES_NAME)
                 .addChildElement(
                     XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "country")
                         .addAttribute(
@@ -647,12 +809,12 @@ public class ManifestDeliveryElementTest {
                                 .setValueAsString("DE")))
                 .build());
     Optional<ManifestDeliveryElement> deliveryElement =
-        ManifestDeliveryElement.fromManifestRootNode(manifest, /* isFastFollowAllowed= */ false);
+        ManifestDeliveryElement.fromManifestRootNode(manifest, ModuleType.FEATURE_MODULE);
     assertThat(deliveryElement).isPresent();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () -> deliveryElement.get().getModuleConditions().getUserCountriesCondition());
 
     assertThat(exception)
@@ -668,14 +830,51 @@ public class ManifestDeliveryElementTest {
                 "com.test.app",
                 withUserCountriesCondition(ImmutableList.of("en", "us")),
                 withUserCountriesCondition(ImmutableList.of("sg"), /* exclude= */ true)),
-            /* isFastFollowAllowed= */ false);
+            ModuleType.FEATURE_MODULE);
     assertThat(element).isPresent();
 
-    ValidationException exception =
-        assertThrows(ValidationException.class, () -> element.get().getModuleConditions());
+    InvalidBundleException exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getModuleConditions());
     assertThat(exception)
         .hasMessageThat()
         .contains("Multiple '<dist:user-countries>' conditions are not supported.");
+  }
+
+  @Test
+  public void getAssetModuleConditions() {
+    AssetModuleTargeting targeting =
+        AssetModuleTargeting.newBuilder()
+            .setDeviceGroupTargeting(
+                DeviceGroupModuleTargeting.newBuilder().addValue("group1").addValue("group2"))
+            .setUserCountriesTargeting(
+                UserCountriesTargeting.newBuilder()
+                    .addCountryCodes("US")
+                    .addCountryCodes("GB")
+                    .setExclude(true))
+            .build();
+
+    Optional<ManifestDeliveryElement> element =
+        ManifestDeliveryElement.fromManifestRootNode(
+            androidManifest("com.test.app", withAssetModuleTargeting(targeting)),
+            ModuleType.ASSET_MODULE);
+    assertThat(element).isPresent();
+
+    assertThat(element.get().getAssetModuleConditions()).isEqualTo(targeting);
+  }
+
+  @Test
+  public void getAssetModuleConditions_unrecognizedCondition() {
+    Optional<ManifestDeliveryElement> element =
+        ManifestDeliveryElement.fromManifestRootNode(
+            androidManifest("com.test.app", withUnsupportedAssetModuleTargeting()),
+            ModuleType.ASSET_MODULE);
+    assertThat(element).isPresent();
+
+    Throwable exception =
+        assertThrows(InvalidBundleException.class, () -> element.get().getAssetModuleConditions());
+    assertThat(exception)
+        .hasMessageThat()
+        .contains("Unrecognized module condition: 'unsupportedCondition'");
   }
 
   private static XmlNode createAndroidManifestWithDeliveryElement(
@@ -691,7 +890,7 @@ public class ManifestDeliveryElementTest {
 
   private static XmlNode createAndroidManifestWithConditions(XmlProtoElement... conditions) {
     XmlProtoElementBuilder conditionsBuilder =
-        XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "conditions");
+        XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, CONDITIONS_ELEMENT_NAME);
     for (XmlProtoElement condition : conditions) {
       conditionsBuilder.addChildElement(condition.toBuilder());
     }
@@ -701,10 +900,11 @@ public class ManifestDeliveryElementTest {
                 .addChildElement(
                     XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "module")
                         .addChildElement(
-                            XmlProtoElementBuilder.create(DISTRIBUTION_NAMESPACE_URI, "delivery")
+                            XmlProtoElementBuilder.create(
+                                    DISTRIBUTION_NAMESPACE_URI, DELIVERY_ELEMENT_NAME)
                                 .addChildElement(
                                     XmlProtoElementBuilder.create(
-                                            DISTRIBUTION_NAMESPACE_URI, "install-time")
+                                            DISTRIBUTION_NAMESPACE_URI, INSTALL_TIME_ELEMENT_NAME)
                                         .addChildElement(conditionsBuilder))))
                 .build())
         .getProto();

@@ -16,25 +16,39 @@
 
 package com.android.tools.build.bundletool.model;
 
+import static com.android.tools.build.bundletool.model.BundleMetadata.BUNDLETOOL_NAMESPACE;
+import static com.android.tools.build.bundletool.model.BundleMetadata.DEVICE_GROUP_CONFIG_JSON_FILE_NAME;
+import static com.android.tools.build.bundletool.model.BundleMetadata.DEVICE_GROUP_CONFIG_PB_FILE_NAME;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForAssetModule;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifestForFeature;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withSharedUserId;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.nativeDirectoryTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.nativeLibraries;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedNativeDirectory;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.toAbi;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.aapt.Resources.XmlNode;
 import com.android.bundle.Config.BundleConfig;
+import com.android.bundle.Config.BundleConfig.BundleType;
+import com.android.bundle.DeviceGroup;
+import com.android.bundle.DeviceGroupConfig;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdk;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdkConfig;
 import com.android.bundle.Targeting.Abi.AbiAlias;
 import com.android.tools.build.bundletool.io.ZipBuilder;
+import com.android.tools.build.bundletool.model.ModuleEntry.ModuleEntryLocationInZipSource;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.testing.AppBundleBuilder;
 import com.android.tools.build.bundletool.testing.BundleConfigBuilder;
-import com.android.tools.build.bundletool.testing.TestUtils;
+import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.io.ByteSource;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.zip.ZipFile;
@@ -49,11 +63,11 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class AppBundleTest {
 
-  private static final byte[] DUMMY_CONTENT = new byte[1];
+  private static final byte[] TEST_CONTENT = new byte[1];
+  private static final String PACKAGE_NAME = "com.test.app.detail";
   private static final BundleConfig BUNDLE_CONFIG = BundleConfigBuilder.create().build();
-  public static final XmlNode MANIFEST = androidManifest("com.test.app.detail");
-  public static final XmlNode ASSET_MODULE_MANIFEST =
-      androidManifestForAssetModule("com.test.app.detail");
+  public static final XmlNode MANIFEST = androidManifest(PACKAGE_NAME);
+  public static final XmlNode ASSET_MODULE_MANIFEST = androidManifestForAssetModule(PACKAGE_NAME);
 
   @Rule public TemporaryFolder tmp = new TemporaryFolder();
 
@@ -67,7 +81,7 @@ public class AppBundleTest {
   @Test
   public void testSingleModuleBundle() throws Exception {
     createBasicZipBuilderWithManifest()
-        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
@@ -76,15 +90,15 @@ public class AppBundleTest {
           .containsExactly(BundleModuleName.create("base"));
     }
   }
-  
+
   @Test
   public void testMultipleModules() throws Exception {
     createBasicZipBuilder(BUNDLE_CONFIG)
         .addFileWithProtoContent(ZipPath.create("base/manifest/AndroidManifest.xml"), MANIFEST)
-        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/assets/file.txt"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), TEST_CONTENT)
+        .addFileWithContent(ZipPath.create("base/assets/file.txt"), TEST_CONTENT)
         .addFileWithProtoContent(ZipPath.create("detail/manifest/AndroidManifest.xml"), MANIFEST)
-        .addFileWithContent(ZipPath.create("detail/assets/file.txt"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("detail/assets/file.txt"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
@@ -97,9 +111,9 @@ public class AppBundleTest {
   @Test
   public void classFilesNotAddedToModule() throws Exception {
     createBasicZipBuilderWithManifest()
-        .addFileWithContent(ZipPath.create("base/root/Foo.classes"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/root/class.txt"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/root/Foo.class"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("base/root/Foo.classes"), TEST_CONTENT)
+        .addFileWithContent(ZipPath.create("base/root/class.txt"), TEST_CONTENT)
+        .addFileWithContent(ZipPath.create("base/root/Foo.class"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
@@ -111,13 +125,13 @@ public class AppBundleTest {
     }
   }
 
-  // Ensures that the ClassesDexNameSanitizer is invoked.
+  // Ensures that the ClassesDexEntriesMutator is invoked.
   @Test
   public void wronglyNamedDexFilesAreRenamed() throws Exception {
     createBasicZipBuilderWithManifest()
-        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/dex/classes1.dex"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/dex/classes2.dex"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), TEST_CONTENT)
+        .addFileWithContent(ZipPath.create("base/dex/classes1.dex"), TEST_CONTENT)
+        .addFileWithContent(ZipPath.create("base/dex/classes2.dex"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
@@ -143,26 +157,27 @@ public class AppBundleTest {
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
       AppBundle appBundle = AppBundle.buildFromZip(appBundleZip);
 
-      Optional<InputStreamSupplier> existingMetadataFile =
+      Optional<ByteSource> existingMetadataFile =
           appBundle
               .getBundleMetadata()
-              .getFileData(/* namespacedDir= */ "some.namespace", /* fileName= */ "metadata1");
+              .getFileAsByteSource(
+                  /* namespacedDir= */ "some.namespace", /* fileName= */ "metadata1");
       assertThat(existingMetadataFile).isPresent();
-      assertThat(TestUtils.toByteArray(existingMetadataFile.get())).isEqualTo(new byte[] {0x01});
+      assertThat(existingMetadataFile.get().read()).isEqualTo(new byte[] {0x01});
 
-      Optional<InputStreamSupplier> existingMetadataFileInSubDir =
+      Optional<ByteSource> existingMetadataFileInSubDir =
           appBundle
               .getBundleMetadata()
-              .getFileData(
+              .getFileAsByteSource(
                   /* namespacedDir= */ "some.namespace/sub-dir", /* fileName= */ "metadata2");
       assertThat(existingMetadataFileInSubDir).isPresent();
-      assertThat(TestUtils.toByteArray(existingMetadataFileInSubDir.get()))
-          .isEqualTo(new byte[] {0x02});
+      assertThat(existingMetadataFileInSubDir.get().read()).isEqualTo(new byte[] {0x02});
 
-      Optional<InputStreamSupplier> nonExistingMetadataFile =
+      Optional<ByteSource> nonExistingMetadataFile =
           appBundle
               .getBundleMetadata()
-              .getFileData(/* namespacedDir= */ "unknown.namespace", /* fileName= */ "blah");
+              .getFileAsByteSource(
+                  /* namespacedDir= */ "unknown.namespace", /* fileName= */ "blah");
       assertThat(nonExistingMetadataFile).isEmpty();
     }
   }
@@ -171,7 +186,7 @@ public class AppBundleTest {
   public void bundleMetadataDirectoryNotAModule() throws Exception {
     createBasicZipBuilderWithManifest()
         .addFileWithContent(
-            ZipPath.create("BUNDLE-METADATA/some.namespace/metadata-file.txt"), DUMMY_CONTENT)
+            ZipPath.create("BUNDLE-METADATA/some.namespace/metadata-file.txt"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
@@ -184,8 +199,8 @@ public class AppBundleTest {
   @Test
   public void metaInfDirectoryNotAModule() throws Exception {
     createBasicZipBuilderWithManifest()
-        .addFileWithContent(ZipPath.create("META-INF/GOOG.RSA"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("META-INF/MANIFEST.SF"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("META-INF/GOOG.RSA"), TEST_CONTENT)
+        .addFileWithContent(ZipPath.create("META-INF/MANIFEST.SF"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
@@ -193,29 +208,6 @@ public class AppBundleTest {
       assertThat(appBundle.getFeatureModules().keySet())
           .containsExactly(BundleModuleName.create("base"));
     }
-  }
-
-  @Test
-  public void bundleModules_noDirectoryZipEntries() throws Exception {
-    AppBundle appBundle =
-        new AppBundleBuilder()
-            .addModule(
-                "base",
-                moduleBuilder ->
-                    moduleBuilder
-                        .addDirectory("dex")
-                        .addFile("dex/classes.dex", DUMMY_CONTENT)
-                        .addDirectory("assets")
-                        .addFile("assets/file.dat", DUMMY_CONTENT)
-                        .addDirectory("manifest")
-                        .addFile("manifest/AndroidManifest.xml", MANIFEST.toByteArray()))
-            .build();
-
-    assertThat(
-            appBundle.getBaseModule().getEntries().stream()
-                .filter(ModuleEntry::isDirectory)
-                .collect(toImmutableList()))
-        .isEmpty();
   }
 
   @Test
@@ -229,59 +221,13 @@ public class AppBundleTest {
   }
 
   @Test
-  public void abiModuleSanitizerInvocation_calledBefore_0_3_1() throws Exception {
-    createBasicZipBuilderWithManifest(BundleConfigBuilder.create().setVersion("0.3.0").build())
-        .addFileWithContent(ZipPath.create("base/lib/x86/libfoo.so"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/lib/armeabi/libfoo.so"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/lib/armeabi/libbar.so"), DUMMY_CONTENT)
-        .writeTo(bundleFile);
-
-    try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
-      AppBundle appBundle = AppBundle.buildFromZip(appBundleZip);
-
-      assertThat(
-              appBundle
-                  .getBaseModule()
-                  .findEntriesUnderPath(ZipPath.create("lib"))
-                  .map(ModuleEntry::getPath)
-                  .collect(toImmutableList()))
-          .containsExactly(
-              ZipPath.create("lib/armeabi/libfoo.so"), ZipPath.create("lib/armeabi/libbar.so"));
-    }
-  }
-
-  @Test
-  public void abiModuleSanitizerInvocation_notCalledAfter_0_3_1() throws Exception {
-    createBasicZipBuilderWithManifest(BundleConfigBuilder.create().setVersion("0.3.1").build())
-        .addFileWithContent(ZipPath.create("base/lib/x86/libfoo.so"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/lib/armeabi/libfoo.so"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/lib/armeabi/libbar.so"), DUMMY_CONTENT)
-        .writeTo(bundleFile);
-
-    try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
-      AppBundle appBundle = AppBundle.buildFromZip(appBundleZip);
-
-      assertThat(
-              appBundle
-                  .getBaseModule()
-                  .findEntriesUnderPath(ZipPath.create("lib"))
-                  .map(ModuleEntry::getPath)
-                  .collect(toImmutableList()))
-          .containsExactly(
-              ZipPath.create("lib/x86/libfoo.so"),
-              ZipPath.create("lib/armeabi/libfoo.so"),
-              ZipPath.create("lib/armeabi/libbar.so"));
-    }
-  }
-
-  @Test
   public void manifestRequired() throws Exception {
     createBasicZipBuilder(BUNDLE_CONFIG)
-        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
-      assertThrows(IllegalStateException.class, () -> AppBundle.buildFromZip(appBundleZip));
+      assertThrows(InvalidBundleException.class, () -> AppBundle.buildFromZip(appBundleZip));
     }
   }
 
@@ -292,10 +238,10 @@ public class AppBundleTest {
             .addModule(
                 "base",
                 baseModule ->
-                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", DUMMY_CONTENT))
+                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", TEST_CONTENT))
             .addModule(
                 "detail",
-                module -> module.setManifest(MANIFEST).addFile("dex/classes.dex", DUMMY_CONTENT))
+                module -> module.setManifest(MANIFEST).addFile("dex/classes.dex", TEST_CONTENT))
             .build();
 
     assertThat(appBundle.getTargetedAbis()).isEmpty();
@@ -310,9 +256,9 @@ public class AppBundleTest {
                 baseModule ->
                     baseModule
                         .setManifest(MANIFEST)
-                        .addFile("dex/classes.dex", DUMMY_CONTENT)
-                        .addFile("lib/x86_64/libfoo.so", DUMMY_CONTENT)
-                        .addFile("lib/armeabi/libfoo.so", DUMMY_CONTENT)
+                        .addFile("dex/classes.dex", TEST_CONTENT)
+                        .addFile("lib/x86_64/libfoo.so", TEST_CONTENT)
+                        .addFile("lib/armeabi/libfoo.so", TEST_CONTENT)
                         .setNativeConfig(
                             nativeLibraries(
                                 targetedNativeDirectory(
@@ -324,9 +270,9 @@ public class AppBundleTest {
                 module ->
                     module
                         .setManifest(MANIFEST)
-                        .addFile("dex/classes.dex", DUMMY_CONTENT)
-                        .addFile("lib/x86_64/libbar.so", DUMMY_CONTENT)
-                        .addFile("lib/armeabi/libbar.so", DUMMY_CONTENT)
+                        .addFile("dex/classes.dex", TEST_CONTENT)
+                        .addFile("lib/x86_64/libbar.so", TEST_CONTENT)
+                        .addFile("lib/armeabi/libbar.so", TEST_CONTENT)
                         .setNativeConfig(
                             nativeLibraries(
                                 targetedNativeDirectory(
@@ -346,15 +292,15 @@ public class AppBundleTest {
             .addModule(
                 "base",
                 baseModule ->
-                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", DUMMY_CONTENT))
+                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", TEST_CONTENT))
             .addModule(
                 "detail",
                 module ->
                     module
                         .setManifest(MANIFEST)
-                        .addFile("dex/classes.dex", DUMMY_CONTENT)
-                        .addFile("lib/arm64-v8a/libbar.so", DUMMY_CONTENT)
-                        .addFile("lib/x86/libbar.so", DUMMY_CONTENT)
+                        .addFile("dex/classes.dex", TEST_CONTENT)
+                        .addFile("lib/arm64-v8a/libbar.so", TEST_CONTENT)
+                        .addFile("lib/x86/libbar.so", TEST_CONTENT)
                         .setNativeConfig(
                             nativeLibraries(
                                 targetedNativeDirectory(
@@ -368,52 +314,19 @@ public class AppBundleTest {
   }
 
   @Test
-  public void renderscript_bcFilesPresent() throws Exception {
-    AppBundle appBundle =
-        new AppBundleBuilder()
-            .addModule(
-                "base",
-                baseModule ->
-                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", DUMMY_CONTENT))
-            .addModule(
-                "detail",
-                module -> module.setManifest(MANIFEST).addFile("res/raw/script.bc", DUMMY_CONTENT))
-            .build();
-
-    assertThat(appBundle.has32BitRenderscriptCode()).isTrue();
-  }
-
-  @Test
-  public void renderscript_bcFilesAbsent() throws Exception {
-    AppBundle appBundle =
-        new AppBundleBuilder()
-            .addModule(
-                "base",
-                baseModule ->
-                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", DUMMY_CONTENT))
-            .addModule(
-                "detail",
-                module ->
-                    module.setManifest(MANIFEST).addFile("assets/language.pak", DUMMY_CONTENT))
-            .build();
-
-    assertThat(appBundle.has32BitRenderscriptCode()).isFalse();
-  }
-
-  @Test
   public void baseAndAssetModule_fromModules_areSeparated() throws Exception {
     AppBundle appBundle =
         new AppBundleBuilder()
             .addModule(
                 "base",
                 baseModule ->
-                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", DUMMY_CONTENT))
+                    baseModule.setManifest(MANIFEST).addFile("dex/classes.dex", TEST_CONTENT))
             .addModule(
                 "some_asset_module",
                 module ->
                     module
                         .setManifest(ASSET_MODULE_MANIFEST)
-                        .addFile("assets/img1.png", DUMMY_CONTENT))
+                        .addFile("assets/img1.png", TEST_CONTENT))
             .build();
 
     assertThat(appBundle.getFeatureModules().keySet())
@@ -426,11 +339,11 @@ public class AppBundleTest {
   public void baseAndAssetModule_fromZipFile_areSeparated() throws Exception {
     createBasicZipBuilder(BUNDLE_CONFIG)
         .addFileWithProtoContent(ZipPath.create("base/manifest/AndroidManifest.xml"), MANIFEST)
-        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), DUMMY_CONTENT)
-        .addFileWithContent(ZipPath.create("base/assets/file.txt"), DUMMY_CONTENT)
+        .addFileWithContent(ZipPath.create("base/dex/classes.dex"), TEST_CONTENT)
+        .addFileWithContent(ZipPath.create("base/assets/file.txt"), TEST_CONTENT)
         .addFileWithProtoContent(
-            ZipPath.create("remote_assets/manifest/AndroidManifest.xml"), ASSET_MODULE_MANIFEST)
-        .addFileWithContent(ZipPath.create("remote_assets/assets/file.txt"), DUMMY_CONTENT)
+            ZipPath.create("asset_module/manifest/AndroidManifest.xml"), ASSET_MODULE_MANIFEST)
+        .addFileWithContent(ZipPath.create("asset_module/assets/file.txt"), TEST_CONTENT)
         .writeTo(bundleFile);
 
     try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
@@ -438,8 +351,406 @@ public class AppBundleTest {
       assertThat(appBundle.getFeatureModules().keySet())
           .containsExactly(BundleModuleName.create("base"));
       assertThat(appBundle.getAssetModules().keySet())
-          .containsExactly(BundleModuleName.create("remote_assets"));
+          .containsExactly(BundleModuleName.create("asset_module"));
     }
+  }
+
+  @Test
+  public void getPackageName() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .addModule("base", baseModule -> baseModule.setManifest(MANIFEST))
+            .build();
+    assertThat(appBundle.getPackageName()).isEqualTo(PACKAGE_NAME);
+  }
+
+  @Test
+  public void getPackageName_assetOnly() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfig.newBuilder().setType(BundleType.ASSET_ONLY).build())
+            .addModule("asset1", baseModule -> baseModule.setManifest(ASSET_MODULE_MANIFEST))
+            .build();
+    assertThat(appBundle.getPackageName()).isEqualTo(PACKAGE_NAME);
+  }
+
+  @Test
+  public void isAssetOnly() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfig.newBuilder().setType(BundleType.ASSET_ONLY).build())
+            .addModule("asset1", baseModule -> baseModule.setManifest(ASSET_MODULE_MANIFEST))
+            .build();
+    assertThat(appBundle.isAssetOnly()).isTrue();
+  }
+
+  @Test
+  public void hasSharedUserId_specifiedInBaseModule_returnsTrue() {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .addModule(
+                "base",
+                baseModule ->
+                    baseModule.setManifest(
+                        androidManifest(PACKAGE_NAME, withSharedUserId("shared_user_id"))))
+            .build();
+    assertThat(appBundle.hasSharedUserId()).isTrue();
+  }
+
+  @Test
+  public void hasSharedUserId_specifiedInFeatureModule_returnsFalse() {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .addModule("base", baseModule -> baseModule.setManifest(androidManifest(PACKAGE_NAME)))
+            .addModule(
+                "feature1",
+                featureModule ->
+                    featureModule.setManifest(
+                        androidManifestForFeature(
+                            PACKAGE_NAME, withSharedUserId("shared_user_id"))))
+            .build();
+    assertThat(appBundle.hasSharedUserId()).isFalse();
+  }
+
+  @Test
+  public void hasSharedUserId_unSpecified_returnsFalse() {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .addModule("base", baseModule -> baseModule.setManifest(androidManifest(PACKAGE_NAME)))
+            .build();
+    assertThat(appBundle.hasSharedUserId()).isFalse();
+  }
+
+  @Test
+  public void bundleLocation_fromZip_areSet() throws Exception {
+    String dexZipEntry = "base/dex/classes.dex";
+    ZipPath dexModuleEntryPath = ZipPath.create("dex/classes.dex");
+
+    createBasicZipBuilderWithManifest()
+        .addFileWithContent(ZipPath.create(dexZipEntry), TEST_CONTENT)
+        .writeTo(bundleFile);
+
+    try (ZipFile appBundleZip = new ZipFile(bundleFile.toFile())) {
+      AppBundle appBundle = AppBundle.buildFromZip(appBundleZip);
+      assertThat(appBundle.getFeatureModules().keySet())
+          .containsExactly(BundleModuleName.create("base"));
+      assertThat(appBundle.getBaseModule().getEntry(dexModuleEntryPath)).isPresent();
+      assertThat(appBundle.getBaseModule().getEntry(dexModuleEntryPath).get().getFileLocation())
+          .hasValue(ModuleEntryLocationInZipSource.create(bundleFile, ZipPath.create(dexZipEntry)));
+    }
+  }
+
+  @Test
+  public void bundleLocation_notFromZip_notSet() throws Exception {
+    String dexFilePath = "dex/classes.dex";
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .addModule("base", builder -> builder.setManifest(MANIFEST).addFile(dexFilePath))
+            .build();
+    assertThat(appBundle.getBaseModule().getEntry(ZipPath.create(dexFilePath))).isPresent();
+    assertThat(
+            appBundle.getBaseModule().getEntry(ZipPath.create(dexFilePath)).get().getFileLocation())
+        .isEmpty();
+  }
+
+  @Test
+  public void storeArchiveEnabled_notPresent_empty() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfigBuilder.create().build())
+            .addModule("base", builder -> builder.setManifest(MANIFEST))
+            .build();
+    assertThat(appBundle.getStoreArchive()).isEmpty();
+  }
+
+  @Test
+  public void storeArchiveEnabled_true() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfigBuilder.create().setStoreArchive(true).build())
+            .addModule("base", builder -> builder.setManifest(MANIFEST))
+            .build();
+    assertThat(appBundle.getStoreArchive().get()).isTrue();
+  }
+
+  @Test
+  public void storeArchiveEnabled_false() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfigBuilder.create().setStoreArchive(false).build())
+            .addModule("base", builder -> builder.setManifest(MANIFEST))
+            .build();
+    assertThat(appBundle.getStoreArchive().get()).isFalse();
+  }
+
+  @Test
+  public void storeArchiveEnabled_optedOutArchive_withXmlFile() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfigBuilder.create().build())
+            .addModule(
+                "base",
+                builder ->
+                    builder.setManifest(MANIFEST).addFile(AppBundle.ARCHIVE_OPT_OUT_XML_PATH))
+            .build();
+    assertThat(appBundle.getStoreArchive().get()).isFalse();
+  }
+
+  @Test
+  public void localeConfigEnabled_notPresent_false() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfigBuilder.create().build())
+            .addModule("base", builder -> builder.setManifest(MANIFEST))
+            .build();
+    assertThat(appBundle.injectLocaleConfig()).isFalse();
+  }
+
+  @Test
+  public void localeConfigEnabled_true() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfigBuilder.create().setInjectLocaleConfig(true).build())
+            .addModule("base", builder -> builder.setManifest(MANIFEST))
+            .build();
+    assertThat(appBundle.injectLocaleConfig()).isTrue();
+  }
+
+  @Test
+  public void localeConfigEnabled_false() throws Exception {
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .setBundleConfig(BundleConfigBuilder.create().setInjectLocaleConfig(false).build())
+            .addModule("base", builder -> builder.setManifest(MANIFEST))
+            .build();
+    assertThat(appBundle.injectLocaleConfig()).isFalse();
+  }
+
+  @Test
+  public void getRuntimeEnabledSdkDependencies_empty() {
+    AppBundle appBundle =
+        new AppBundleBuilder().addModule("base", builder -> builder.setManifest(MANIFEST)).build();
+
+    assertThat(appBundle.getRuntimeEnabledSdkDependencies()).isEmpty();
+  }
+
+  @Test
+  public void getRuntimeEnabledSdkDependencies_notEmpty() {
+    RuntimeEnabledSdk runtimeEnabledSdk1 =
+        RuntimeEnabledSdk.newBuilder()
+            .setPackageName("com.test.sdk1")
+            .setVersionMajor(12345)
+            .setCertificateDigest("AA:BB:CC")
+            .build();
+    RuntimeEnabledSdk runtimeEnabledSdk2 =
+        RuntimeEnabledSdk.newBuilder()
+            .setPackageName("com.test.sdk2")
+            .setVersionMajor(12345)
+            .setCertificateDigest("AA:BB:CC")
+            .build();
+    AppBundle appBundle =
+        new AppBundleBuilder()
+            .addModule(
+                "base",
+                builder ->
+                    builder
+                        .setManifest(MANIFEST)
+                        .setRuntimeEnabledSdkConfig(
+                            RuntimeEnabledSdkConfig.newBuilder()
+                                .addRuntimeEnabledSdk(runtimeEnabledSdk1)
+                                .build()))
+            .addModule(
+                "feature1",
+                featureModule ->
+                    featureModule
+                        .setManifest(androidManifestForFeature(PACKAGE_NAME))
+                        .setRuntimeEnabledSdkConfig(
+                            RuntimeEnabledSdkConfig.newBuilder()
+                                .addRuntimeEnabledSdk(runtimeEnabledSdk2)
+                                .build()))
+            .build();
+
+    assertThat(appBundle.getRuntimeEnabledSdkDependencies().entrySet())
+        .containsExactlyElementsIn(
+            ImmutableMap.of(
+                    "com.test.sdk1", runtimeEnabledSdk1, "com.test.sdk2", runtimeEnabledSdk2)
+                .entrySet());
+  }
+
+  @Test
+  public void duplicateRuntimeEnabledSdkDependencies_buildThrows() {
+    RuntimeEnabledSdkConfig runtimeEnabledSdkConfig =
+        RuntimeEnabledSdkConfig.newBuilder()
+            .addRuntimeEnabledSdk(
+                RuntimeEnabledSdk.newBuilder()
+                    .setPackageName("com.test.sdk")
+                    .setVersionMajor(12345)
+                    .setCertificateDigest("AA:BB:CC"))
+            .build();
+    BundleModule module1 =
+        new BundleModuleBuilder("base")
+            .setManifest(MANIFEST)
+            .setRuntimeEnabledSdkConfig(runtimeEnabledSdkConfig)
+            .build();
+    BundleModule module2 =
+        new BundleModuleBuilder("feature")
+            .setManifest(MANIFEST)
+            .setRuntimeEnabledSdkConfig(runtimeEnabledSdkConfig)
+            .build();
+
+    Throwable e =
+        assertThrows(
+            InvalidBundleException.class,
+            () ->
+                AppBundle.buildFromModules(
+                    ImmutableList.of(module1, module2),
+                    BundleConfig.getDefaultInstance(),
+                    BundleMetadata.builder().build()));
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Found multiple dependencies on the same runtime-enabled SDK 'com.test.sdk'.");
+  }
+
+  @Test
+  public void deviceGroupConfigMetadata_invalidJson_buildThrows() {
+    BundleModule module = new BundleModuleBuilder("base").setManifest(MANIFEST).build();
+
+    Throwable e =
+        assertThrows(
+            InvalidBundleException.class,
+            () ->
+                AppBundle.buildFromModules(
+                    ImmutableList.of(module),
+                    BundleConfig.getDefaultInstance(),
+                    BundleMetadata.builder()
+                        .addFile(
+                            BUNDLETOOL_NAMESPACE,
+                            DEVICE_GROUP_CONFIG_JSON_FILE_NAME,
+                            ByteSource.wrap("{[bad".getBytes(UTF_8)))
+                        .build()));
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Cannot parse the device group config metadata as JSON.");
+  }
+
+  @Test
+  public void deviceGroupConfigMetadata_groupOtherDefined_buildThrows() {
+    BundleModule module = new BundleModuleBuilder("base").setManifest(MANIFEST).build();
+    String deviceGroupConfig =
+        "{ \"device_groups\": [ {\"name\": \"high\"}, {\"name\": \"other\"} ] }";
+
+    Throwable e =
+        assertThrows(
+            InvalidBundleException.class,
+            () ->
+                AppBundle.buildFromModules(
+                    ImmutableList.of(module),
+                    BundleConfig.getDefaultInstance(),
+                    BundleMetadata.builder()
+                        .addFile(
+                            BUNDLETOOL_NAMESPACE,
+                            DEVICE_GROUP_CONFIG_JSON_FILE_NAME,
+                            ByteSource.wrap(deviceGroupConfig.getBytes(UTF_8)))
+                        .build()));
+    assertThat(e).hasMessageThat().contains("Device group 'other' is implicit.");
+  }
+
+  @Test
+  public void deviceGroupConfigJsonMetadata_addsOther() {
+    BundleModule module = new BundleModuleBuilder("base").setManifest(MANIFEST).build();
+    String deviceGroupConfig =
+        "{ \"device_groups\": [ {\"name\": \"high\"}, {\"name\": \"low\"} ] }";
+
+    AppBundle appBundle =
+        AppBundle.buildFromModules(
+            ImmutableList.of(module),
+            BundleConfig.getDefaultInstance(),
+            BundleMetadata.builder()
+                .addFile(
+                    BUNDLETOOL_NAMESPACE,
+                    DEVICE_GROUP_CONFIG_JSON_FILE_NAME,
+                    ByteSource.wrap(deviceGroupConfig.getBytes(UTF_8)))
+                .build());
+
+    assertThat(
+            appBundle.getDeviceGroupConfig().get().getDeviceGroupsList().stream()
+                .map(DeviceGroup::getName))
+        .containsExactly("high", "low", "other")
+        .inOrder();
+  }
+
+  @Test
+  public void deviceGroupConfigPbMetadata_invalidProto_buildThrows() {
+    BundleModule module = new BundleModuleBuilder("base").setManifest(MANIFEST).build();
+
+    Throwable e =
+        assertThrows(
+            InvalidBundleException.class,
+            () ->
+                AppBundle.buildFromModules(
+                    ImmutableList.of(module),
+                    BundleConfig.getDefaultInstance(),
+                    BundleMetadata.builder()
+                        .addFile(
+                            BUNDLETOOL_NAMESPACE,
+                            DEVICE_GROUP_CONFIG_PB_FILE_NAME,
+                            ByteSource.wrap("{[bad".getBytes(UTF_8)))
+                        .build()));
+    assertThat(e)
+        .hasMessageThat()
+        .contains("Cannot parse the device group config metadata as a binary protobuf.");
+  }
+
+  @Test
+  public void deviceGroupConfigPbMetadata_groupOtherDefined_buildThrows() {
+    BundleModule module = new BundleModuleBuilder("base").setManifest(MANIFEST).build();
+    DeviceGroupConfig deviceGroupConfig =
+        DeviceGroupConfig.newBuilder()
+            .addDeviceGroups(DeviceGroup.newBuilder().setName("high"))
+            .addDeviceGroups(DeviceGroup.newBuilder().setName("other"))
+            .build();
+
+    Throwable e =
+        assertThrows(
+            InvalidBundleException.class,
+            () ->
+                AppBundle.buildFromModules(
+                    ImmutableList.of(module),
+                    BundleConfig.getDefaultInstance(),
+                    BundleMetadata.builder()
+                        .addFile(
+                            BUNDLETOOL_NAMESPACE,
+                            DEVICE_GROUP_CONFIG_PB_FILE_NAME,
+                            ByteSource.wrap(deviceGroupConfig.toByteArray()))
+                        .build()));
+    assertThat(e).hasMessageThat().contains("Device group 'other' is implicit.");
+  }
+
+  @Test
+  public void deviceGroupConfigPbMetadata_addsOther() {
+    BundleModule module = new BundleModuleBuilder("base").setManifest(MANIFEST).build();
+    DeviceGroupConfig deviceGroupConfig =
+        DeviceGroupConfig.newBuilder()
+            .addDeviceGroups(DeviceGroup.newBuilder().setName("high"))
+            .addDeviceGroups(DeviceGroup.newBuilder().setName("low"))
+            .build();
+
+    AppBundle appBundle =
+        AppBundle.buildFromModules(
+            ImmutableList.of(module),
+            BundleConfig.getDefaultInstance(),
+            BundleMetadata.builder()
+                .addFile(
+                    BUNDLETOOL_NAMESPACE,
+                    DEVICE_GROUP_CONFIG_PB_FILE_NAME,
+                    ByteSource.wrap(deviceGroupConfig.toByteArray()))
+                .build());
+
+    assertThat(
+            appBundle.getDeviceGroupConfig().get().getDeviceGroupsList().stream()
+                .map(DeviceGroup::getName))
+        .containsExactly("high", "low", "other")
+        .inOrder();
   }
 
   private static ZipBuilder createBasicZipBuilder(BundleConfig config) {

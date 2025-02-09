@@ -19,6 +19,7 @@ package com.android.tools.build.bundletool.device;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.android.bundle.Devices.DeviceSpec;
+import com.android.bundle.Devices.SdkRuntime;
 import com.android.ddmlib.IDevice.DeviceState;
 import com.android.tools.build.bundletool.device.activitymanager.ActivityManagerRunner;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
@@ -31,6 +32,15 @@ import java.util.concurrent.TimeoutException;
 public class DeviceAnalyzer {
 
   private final AdbServer adb;
+
+  private static final String BRAND_PROPERTY = "ro.product.brand";
+  private static final String DEVICE_PROPERTY = "ro.product.device";
+  private static final String SOC_MANUFACTURER_PROPERTY = "ro.soc.manufacturer";
+  private static final String SOC_MODEL_PROPERTY = "ro.soc.model";
+
+  public static final String GET_MEMORY_KIB_SHELL_COMMAND =
+      "cat /proc/meminfo | grep -i 'MemTotal' | grep -oE '[0-9]+'";
+  private static final int FROM_KIB_TO_BYTES = 1024;
 
   // For API M+.
   private static final String LOCALE_PROPERTY_SYS = "persist.sys.locale";
@@ -53,11 +63,17 @@ public class DeviceAnalyzer {
       Device device = getAndValidateDevice(deviceId);
 
       // device.getVersion().getApiLevel() returns 1 in case of failure.
-      int deviceSdkVersion = device.getVersion().getApiLevel();
-      checkState(deviceSdkVersion > 1, "Error retrieving device SDK version. Please try again.");
+      checkState(
+          device.getVersion().getApiLevel() > 1,
+          "Error retrieving device SDK version. Please try again.");
+      // We want to consider device's feature level instead of API level so that targeting matching
+      // is done properly on preview builds.
+      int deviceSdkVersion = device.getVersion().getFeatureLevel();
+      String codename = device.getVersion().getCodename();
       int deviceDensity = device.getDensity();
       checkState(deviceDensity > 0, "Error retrieving device density. Please try again.");
       ImmutableList<String> deviceFeatures = device.getDeviceFeatures();
+      ImmutableList<String> glExtensions = device.getGlExtensions();
 
       ActivityManagerRunner activityManagerRunner = new ActivityManagerRunner(device);
       ImmutableList<String> deviceLocales = activityManagerRunner.getDeviceLocales();
@@ -72,17 +88,41 @@ public class DeviceAnalyzer {
       }
       checkState(!supportedAbis.isEmpty(), "Error retrieving device ABIs. Please try again.");
 
-      return DeviceSpec.newBuilder()
-          .setSdkVersion(deviceSdkVersion)
-          .addAllSupportedAbis(supportedAbis)
-          .addAllSupportedLocales(deviceLocales)
-          .setScreenDensity(deviceDensity)
-          .addAllDeviceFeatures(deviceFeatures)
-          .build();
+      SdkRuntime sdkRuntime =
+          SdkRuntime.newBuilder().setSupported(device.supportsPrivacySandbox()).build();
+
+      Optional<String> buildBrand = device.getProperty(BRAND_PROPERTY);
+      Optional<String> buildDevice = device.getProperty(DEVICE_PROPERTY);
+      Optional<String> socManufacturer = device.getProperty(SOC_MANUFACTURER_PROPERTY);
+      Optional<String> socModel = device.getProperty(SOC_MODEL_PROPERTY);
+
+      DeviceSpec.Builder builder =
+          DeviceSpec.newBuilder()
+              .setSdkVersion(deviceSdkVersion)
+              .addAllSupportedAbis(supportedAbis)
+              .addAllSupportedLocales(deviceLocales)
+              .setScreenDensity(deviceDensity)
+              .addAllDeviceFeatures(deviceFeatures)
+              .addAllGlExtensions(glExtensions)
+              .setSdkRuntime(sdkRuntime);
+      if (codename != null) {
+        builder.setCodename(codename);
+      }
+
+      builder.setRamBytes(
+          Long.parseLong(new AdbShellCommandTask(device, GET_MEMORY_KIB_SHELL_COMMAND).execute().get(0))
+              * FROM_KIB_TO_BYTES);
+
+      buildBrand.ifPresent(builder::setBuildBrand);
+      buildDevice.ifPresent(builder::setBuildDevice);
+      socManufacturer.ifPresent(builder::setSocManufacturer);
+      socModel.ifPresent(builder::setSocModel);
+
+      return builder.build();
     } catch (TimeoutException e) {
       throw CommandExecutionException.builder()
           .withCause(e)
-          .withMessage("Timed out while waiting for ADB.")
+          .withInternalMessage("Timed out while waiting for ADB.")
           .build();
     }
   }
@@ -110,24 +150,25 @@ public class DeviceAnalyzer {
         });
   }
 
-  private Device getAndValidateDevice(Optional<String> deviceId) throws TimeoutException {
+  /** Gets and validates the connected device. */
+  public Device getAndValidateDevice(Optional<String> deviceId) throws TimeoutException {
     Device device =
         getTargetDevice(deviceId)
             .orElseThrow(
                 () ->
                     CommandExecutionException.builder()
-                        .withMessage("Unable to find the requested device.")
+                        .withInternalMessage("Unable to find the requested device.")
                         .build());
 
     if (device.getState().equals(DeviceState.UNAUTHORIZED)) {
       throw CommandExecutionException.builder()
-          .withMessage(
+          .withInternalMessage(
               "Device found but not authorized for connecting. "
                   + "Please allow USB debugging on the device.")
           .build();
     } else if (!device.getState().equals(DeviceState.ONLINE)) {
       throw CommandExecutionException.builder()
-          .withMessage(
+          .withInternalMessage(
               "Unable to connect to the device (device state: '%s').", device.getState().name())
           .build();
     }
@@ -137,17 +178,19 @@ public class DeviceAnalyzer {
   private Optional<Device> getTargetDevice(Optional<String> deviceId) throws TimeoutException {
     ImmutableList<Device> devices = adb.getDevices();
     if (devices.isEmpty()) {
-      throw new CommandExecutionException("No connected devices found.");
+      throw CommandExecutionException.builder()
+          .withInternalMessage("No connected devices found.")
+          .build();
     }
     if (deviceId.isPresent()) {
-      return devices
-          .stream()
+      return devices.stream()
           .filter(device -> device.getSerialNumber().equals(deviceId.get()))
           .findFirst();
     } else {
       if (devices.size() > 1) {
-        throw new CommandExecutionException(
-            "More than one device connected, please provide --device-id.");
+        throw CommandExecutionException.builder()
+            .withInternalMessage("More than one device connected, please provide --device-id.")
+            .build();
       }
       return Optional.of(devices.get(0));
     }

@@ -17,6 +17,8 @@
 package com.android.tools.build.bundletool.validation;
 
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withFusingAttribute;
+import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.withIsolatedSplits;
 import static com.android.tools.build.bundletool.testing.ResourcesTableFactory.USER_PACKAGE_OFFSET;
 import static com.android.tools.build.bundletool.testing.ResourcesTableFactory.entry;
 import static com.android.tools.build.bundletool.testing.ResourcesTableFactory.pkg;
@@ -27,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.aapt.Resources.ResourceTable;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.testing.BundleModuleBuilder;
 import com.android.tools.build.bundletool.testing.ResourceTableBuilder;
 import com.google.common.collect.ImmutableList;
@@ -77,9 +79,10 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> new ResourceTableValidator().validateModule(module));
+            InvalidBundleException.class,
+            () -> new ResourceTableValidator().validateModule(module));
 
     assertThat(exception)
         .hasMessageThat()
@@ -95,9 +98,10 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> new ResourceTableValidator().validateModule(module));
+            InvalidBundleException.class,
+            () -> new ResourceTableValidator().validateModule(module));
 
     assertThat(exception)
         .hasMessageThat()
@@ -114,9 +118,10 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> new ResourceTableValidator().validateModule(module));
+            InvalidBundleException.class,
+            () -> new ResourceTableValidator().validateModule(module));
 
     assertThat(exception)
         .hasMessageThat()
@@ -136,9 +141,10 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class, () -> new ResourceTableValidator().validateModule(module));
+            InvalidBundleException.class,
+            () -> new ResourceTableValidator().validateModule(module));
 
     assertThat(exception)
         .hasMessageThat()
@@ -148,7 +154,7 @@ public class ResourceTableValidatorTest {
   @Test
   public void duplicateResourceId_sameModule_throws() throws Exception {
     BundleModule module =
-        new BundleModuleBuilder("module")
+        new BundleModuleBuilder("base")
             .setResourceTable(
                 resourceTable(
                     pkg(
@@ -158,10 +164,10 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
-            () -> new ResourceTableValidator().checkResourceIdsAreUnique(ImmutableList.of(module)));
+            InvalidBundleException.class,
+            () -> new ResourceTableValidator().checkResourceIds(ImmutableList.of(module)));
 
     assertThat(exception).hasMessageThat().contains("Duplicate resource");
   }
@@ -169,7 +175,7 @@ public class ResourceTableValidatorTest {
   @Test
   public void duplicateResourceId_differentModule_throws() throws Exception {
     BundleModule firstModule =
-        new BundleModuleBuilder("firstModule")
+        new BundleModuleBuilder("base")
             .setResourceTable(
                 resourceTable(
                     pkg(
@@ -189,12 +195,120 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    ValidationException exception =
+    InvalidBundleException exception =
         assertThrows(
-            ValidationException.class,
+            InvalidBundleException.class,
             () ->
                 new ResourceTableValidator()
-                    .checkResourceIdsAreUnique(ImmutableList.of(firstModule, secondModule)));
+                    .checkResourceIds(ImmutableList.of(firstModule, secondModule)));
+
+    assertThat(exception).hasMessageThat().contains("Duplicate resource");
+  }
+
+  @Test
+  public void duplicateResourceId_isolatedSplits_sameModule_throws() throws Exception {
+    BundleModule module =
+        new BundleModuleBuilder("base")
+            .setResourceTable(
+                resourceTable(
+                    pkg(
+                        USER_PACKAGE_OFFSET,
+                        "com.test.app",
+                        type(0x01, "drawable", entry(0x0002, "logo"), entry(0x0002, "logo2")))))
+            .setManifest(androidManifest("com.test.app", withIsolatedSplits(true)))
+            .build();
+
+    InvalidBundleException exception =
+        assertThrows(
+            InvalidBundleException.class,
+            () -> new ResourceTableValidator().checkResourceIds(ImmutableList.of(module)));
+
+    assertThat(exception).hasMessageThat().contains("Duplicate resource");
+  }
+
+  @Test
+  public void duplicateResourceId_isolatedSplits_differentModule_doesNotThrow() throws Exception {
+    BundleModule baseModule =
+        new BundleModuleBuilder("base")
+            .setResourceTable(
+                resourceTable(
+                    pkg(
+                        USER_PACKAGE_OFFSET,
+                        "com.test.app",
+                        type(0x01, "drawable", entry(0x0002, "logo")))))
+            .setManifest(androidManifest("com.test.app", withIsolatedSplits(true)))
+            .build();
+    BundleModule secondModule =
+        new BundleModuleBuilder("secondModule")
+            .setResourceTable(
+                resourceTable(
+                    pkg(
+                        USER_PACKAGE_OFFSET,
+                        "com.test.app",
+                        type(0x01, "drawable", entry(0x0002, "logo")))))
+            .setManifest(androidManifest("com.test.app", withFusingAttribute(false)))
+            .build();
+
+    new ResourceTableValidator().checkResourceIds(ImmutableList.of(baseModule, secondModule));
+  }
+
+  @Test
+  public void duplicateResourceId_isolatedSplits_sameModuleWithoutFusing_throws() throws Exception {
+    BundleModule baseModule =
+        new BundleModuleBuilder("base")
+            .setManifest(androidManifest("com.test.app", withIsolatedSplits(true)))
+            .build();
+    BundleModule secondModule =
+        new BundleModuleBuilder("secondModule")
+            .setResourceTable(
+                resourceTable(
+                    pkg(
+                        USER_PACKAGE_OFFSET,
+                        "com.test.app",
+                        type(0x01, "drawable", entry(0x0002, "logo"), entry(0x0002, "logo2")))))
+            .setManifest(androidManifest("com.test.app", withFusingAttribute(false)))
+            .build();
+
+    InvalidBundleException exception =
+        assertThrows(
+            InvalidBundleException.class,
+            () ->
+                new ResourceTableValidator()
+                    .checkResourceIds(ImmutableList.of(baseModule, secondModule)));
+
+    assertThat(exception).hasMessageThat().contains("Duplicate resource");
+  }
+
+  @Test
+  public void duplicateResourceId_isolatedSplits_differentModuleWithFusing_throws()
+      throws Exception {
+    BundleModule baseModule =
+        new BundleModuleBuilder("base")
+            .setResourceTable(
+                resourceTable(
+                    pkg(
+                        USER_PACKAGE_OFFSET,
+                        "com.test.app",
+                        type(0x01, "drawable", entry(0x0002, "logo")))))
+            .setManifest(androidManifest("com.test.app", withIsolatedSplits(true)))
+            .build();
+    BundleModule secondModule =
+        new BundleModuleBuilder("secondModule")
+            .setResourceTable(
+                resourceTable(
+                    pkg(
+                        USER_PACKAGE_OFFSET,
+                        "com.test.app",
+                        type(0x01, "drawable", entry(0x0002, "logo")))))
+            .setManifest(androidManifest("com.test.app", withFusingAttribute(true)))
+            .build();
+
+    InvalidBundleException exception =
+        assertThrows(
+            InvalidBundleException.class,
+            () ->
+                new ResourceTableValidator()
+                    .checkResourceIds(ImmutableList.of(baseModule, secondModule)));
 
     assertThat(exception).hasMessageThat().contains("Duplicate resource");
   }
@@ -202,18 +316,18 @@ public class ResourceTableValidatorTest {
   @Test
   public void noResourceTable_doesNotThrow() throws Exception {
     BundleModule module =
-        new BundleModuleBuilder("module")
+        new BundleModuleBuilder("base")
             .setResourceTable(resourceTable())
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new ResourceTableValidator().checkResourceIdsAreUnique(ImmutableList.of(module));
+    new ResourceTableValidator().checkResourceIds(ImmutableList.of(module));
   }
 
   @Test
   public void nonDuplicateResources_sameModule_doesNotThrow() throws Exception {
     BundleModule module =
-        new BundleModuleBuilder("module")
+        new BundleModuleBuilder("base")
             .setResourceTable(
                 resourceTable(
                     pkg(
@@ -223,13 +337,13 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new ResourceTableValidator().checkResourceIdsAreUnique(ImmutableList.of(module));
+    new ResourceTableValidator().checkResourceIds(ImmutableList.of(module));
   }
 
   @Test
   public void nonDuplicateResources_differentModule_doesNotThrow() throws Exception {
     BundleModule firstModule =
-        new BundleModuleBuilder("firstModule")
+        new BundleModuleBuilder("base")
             .setResourceTable(
                 resourceTable(
                     pkg(
@@ -249,8 +363,7 @@ public class ResourceTableValidatorTest {
             .setManifest(androidManifest("com.test.app"))
             .build();
 
-    new ResourceTableValidator()
-        .checkResourceIdsAreUnique(ImmutableList.of(firstModule, secondModule));
+    new ResourceTableValidator().checkResourceIds(ImmutableList.of(firstModule, secondModule));
   }
 }
 

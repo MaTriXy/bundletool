@@ -19,8 +19,6 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.google.common.collect.ImmutableList;
-import java.nio.file.Path;
-import java.util.Iterator;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -70,6 +68,21 @@ public final class ZipPathTest {
   }
 
   @Test
+  public void testCreate_fromImmutableList() {
+    ZipPath path1 = ZipPath.create("foo/bar");
+    ZipPath path2 = ZipPath.create(ImmutableList.of("foo", "bar"));
+    assertThat((Object) path1).isEqualTo(path2);
+  }
+
+  @Test
+  public void testCreate_throwsIfInvalidImmutableList() {
+    assertThrows(
+        IllegalArgumentException.class, () -> ZipPath.create(ImmutableList.of("foo", "", "bar")));
+    assertThrows(
+        IllegalArgumentException.class, () -> ZipPath.create(ImmutableList.of("foo", "/", "bar")));
+  }
+
+  @Test
   public void testResolve_fromEmptyPath() {
     assertThat((Object) ZipPath.create("").resolve("foo")).isEqualTo(ZipPath.create("foo"));
     assertThat((Object) ZipPath.create("").resolve("foo/bar")).isEqualTo(ZipPath.create("foo/bar"));
@@ -99,7 +112,7 @@ public final class ZipPathTest {
   public void testResolveNull_throws() {
     ZipPath path = ZipPath.create("foo");
     assertThrows(NullPointerException.class, () -> path.resolve((String) null));
-    assertThrows(NullPointerException.class, () -> path.resolve((Path) null));
+    assertThrows(NullPointerException.class, () -> path.resolve((ZipPath) null));
   }
 
   @Test
@@ -121,7 +134,7 @@ public final class ZipPathTest {
   @Test
   public void testResolveSiblingNull_throws() {
     ZipPath path = ZipPath.create("foo/bar");
-    assertThrows(NullPointerException.class, () -> path.resolveSibling((Path) null));
+    assertThrows(NullPointerException.class, () -> path.resolveSibling((ZipPath) null));
     assertThrows(NullPointerException.class, () -> path.resolveSibling((String) null));
   }
 
@@ -269,16 +282,6 @@ public final class ZipPathTest {
     assertThat(ZipPath.create("/").toString()).isEmpty();
     assertThat(ZipPath.create("foo/bar").toString()).isEqualTo("foo/bar");
     assertThat(ZipPath.create("/foo//bar/").toString()).isEqualTo("foo/bar");
-  }
-
-  @Test
-  public void testIterator() {
-    Iterator<Path> iterator = ZipPath.create("foo/bar").iterator();
-    assertThat(iterator.hasNext()).isTrue();
-    assertThat((Object) iterator.next()).isEqualTo(ZipPath.create("foo"));
-    assertThat(iterator.hasNext()).isTrue();
-    assertThat((Object) iterator.next()).isEqualTo(ZipPath.create("bar"));
-    assertThat(iterator.hasNext()).isFalse();
   }
 
   @Test

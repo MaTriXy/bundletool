@@ -16,7 +16,7 @@
 
 package com.android.tools.build.bundletool.validation;
 
-import com.android.tools.build.bundletool.model.exceptions.BundleFileTypesException.DirectoryInBundleException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -26,7 +26,19 @@ public class BundleZipValidator extends SubValidator {
   @Override
   public void validateBundleZipEntry(ZipFile bundleFile, ZipEntry zipEntry) {
     if (zipEntry.isDirectory()) {
-      throw new DirectoryInBundleException(zipEntry);
+      throw InvalidBundleException.builder()
+          .withUserMessage(
+              "The bundle zip file contains directory zip entry '%s' which is not allowed.",
+              zipEntry.getName())
+          .build();
+    }
+    if (zipEntry.getName().startsWith("/")) {
+      throw InvalidBundleException.builder()
+          .withUserMessage(
+              "The bundle zip file contains a zip entry starting with /, which is not "
+                  + "allowed: '%s'.",
+              zipEntry.getName())
+          .build();
     }
   }
 }

@@ -34,11 +34,21 @@ import java.util.stream.Stream;
 public final class GetSizeCsvUtils {
 
   private static final Ordering<Dimension> DIMENSIONS_COMPARATOR =
-      Ordering.explicit(Dimension.SDK, Dimension.ABI, Dimension.SCREEN_DENSITY, Dimension.LANGUAGE);
+      Ordering.explicit(
+          Dimension.SDK,
+          Dimension.ABI,
+          Dimension.SCREEN_DENSITY,
+          Dimension.LANGUAGE,
+          Dimension.TEXTURE_COMPRESSION_FORMAT,
+          Dimension.DEVICE_GROUP,
+          Dimension.DEVICE_TIER,
+          Dimension.COUNTRY_SET,
+          Dimension.SDK_RUNTIME);
 
   public static String getSizeTotalOutputInCsv(
-      ConfigurationSizes configurationSizes, ImmutableSet<Dimension> dimensions) {
-
+      ConfigurationSizes configurationSizes,
+      ImmutableSet<Dimension> dimensions,
+      SizeFormatter sizeFormatter) {
     checkState(
         configurationSizes
             .getMinSizeConfigurationMap()
@@ -53,6 +63,7 @@ public final class GetSizeCsvUtils {
         configurationSizes.getMinSizeConfigurationMap().keySet()) {
       csvFormatter.addRow(
           getSizeTotalCsvRow(
+              sizeFormatter,
               dimensions,
               sizeConfiguration,
               configurationSizes.getMinSizeConfigurationMap().get(sizeConfiguration),
@@ -70,22 +81,33 @@ public final class GetSizeCsvUtils {
   }
 
   private static ImmutableList<String> getSizeTotalCsvRow(
+      SizeFormatter sizeFormatter,
       ImmutableSet<Dimension> dimensions,
       SizeConfiguration sizeConfiguration,
       long minSize,
       long maxSize) {
     ImmutableMap<Dimension, Supplier<Optional<String>>> dimensionToTextMap =
-        ImmutableMap.of(
-            Dimension.ABI, sizeConfiguration::getAbi,
-            Dimension.SDK, sizeConfiguration::getSdkVersion,
-            Dimension.LANGUAGE, sizeConfiguration::getLocale,
-            Dimension.SCREEN_DENSITY, sizeConfiguration::getScreenDensity);
+        ImmutableMap.<Dimension, Supplier<Optional<String>>>builder()
+            .put(Dimension.ABI, sizeConfiguration::getAbi)
+            .put(Dimension.SDK, sizeConfiguration::getSdkVersion)
+            .put(Dimension.LANGUAGE, sizeConfiguration::getLocale)
+            .put(Dimension.SCREEN_DENSITY, sizeConfiguration::getScreenDensity)
+            .put(
+                Dimension.TEXTURE_COMPRESSION_FORMAT,
+                sizeConfiguration::getTextureCompressionFormat)
+            .put(Dimension.DEVICE_GROUP, sizeConfiguration::getDeviceGroup)
+            .put(
+                Dimension.DEVICE_TIER,
+                () -> sizeConfiguration.getDeviceTier().map(i -> i.toString()))
+            .put(Dimension.COUNTRY_SET, sizeConfiguration::getCountrySet)
+            .put(Dimension.SDK_RUNTIME, sizeConfiguration::getSdkRuntime)
+            .buildOrThrow();
 
     return Stream.concat(
             dimensions.stream()
                 .sorted(DIMENSIONS_COMPARATOR)
                 .map(dimension -> dimensionToTextMap.get(dimension).get().orElse("")),
-            Stream.of(String.valueOf(minSize), String.valueOf(maxSize)))
+            Stream.of(sizeFormatter.format(minSize), sizeFormatter.format(maxSize)))
         .collect(toImmutableList());
   }
 

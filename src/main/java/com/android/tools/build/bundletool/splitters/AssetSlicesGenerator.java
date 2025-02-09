@@ -21,12 +21,13 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.BundleModule.ModuleDeliveryType;
+import com.android.tools.build.bundletool.model.ModuleDeliveryType;
 import com.android.tools.build.bundletool.model.ModuleSplit;
 import com.google.common.collect.ImmutableList;
+import java.util.Optional;
 
 /**
- * Generates asset slices from remote asset modules.
+ * Generates asset slices from asset modules.
  *
  * <p>Each asset in the module is inserted in at most one asset slice, according to its target.
  */
@@ -34,36 +35,69 @@ public class AssetSlicesGenerator {
 
   private final AppBundle appBundle;
   private final ApkGenerationConfiguration apkGenerationConfiguration;
+  private final Optional<Long> assetModulesVersionOverride;
 
   public AssetSlicesGenerator(
-      AppBundle appBundle, ApkGenerationConfiguration apkGenerationConfiguration) {
+      AppBundle appBundle,
+      ApkGenerationConfiguration apkGenerationConfiguration,
+      Optional<Long> assetModulesVersionOverride) {
     this.appBundle = checkNotNull(appBundle);
     this.apkGenerationConfiguration = checkNotNull(apkGenerationConfiguration);
+    this.assetModulesVersionOverride = assetModulesVersionOverride;
   }
 
   public ImmutableList<ModuleSplit> generateAssetSlices() {
     ImmutableList.Builder<ModuleSplit> splits = ImmutableList.builder();
-    int versionCode = appBundle.getBaseModule().getAndroidManifest().getVersionCode();
+    Optional<Integer> appVersionCode =
+        appBundle.isAssetOnly()
+            ? Optional.empty()
+            : appBundle.getBaseModule().getAndroidManifest().getVersionCode();
 
     for (BundleModule module : appBundle.getAssetModules().values()) {
-      RemoteAssetModuleSplitter moduleSplitter =
-          new RemoteAssetModuleSplitter(module, apkGenerationConfiguration);
-      if (module.getDeliveryType().equals(ModuleDeliveryType.ALWAYS_INITIAL_INSTALL)) {
-        splits.addAll(
-            moduleSplitter.splitModule().stream()
-                .map(split -> addVersionCode(split, versionCode))
-                .collect(toImmutableList()));
-      } else {
-        splits.addAll(moduleSplitter.splitModule());
-      }
+      AssetModuleSplitter moduleSplitter =
+          new AssetModuleSplitter(module, apkGenerationConfiguration, appBundle);
+      splits.addAll(
+          moduleSplitter.splitModule().stream()
+              .map(
+                  split -> {
+                    if (module.getDeliveryType().equals(ModuleDeliveryType.NO_INITIAL_INSTALL)) {
+                      // In slices for on-demand and fast-follow asset modules the version name
+                      // instead of the version code is set, since their version code is not used by
+                      // Android.
+                      Optional<String> nonUpfrontAssetModulesVersionName =
+                          (assetModulesVersionOverride.isPresent()
+                                  ? assetModulesVersionOverride
+                                  : appVersionCode)
+                              .map(Object::toString);
+                      return addVersionName(split, nonUpfrontAssetModulesVersionName);
+                    } else {
+                      // Install-time assets module have the same version code as the app.
+                      return addVersionCode(split, appVersionCode);
+                    }
+                  })
+              .collect(toImmutableList()));
     }
     return splits.build();
   }
 
-  public static ModuleSplit addVersionCode(ModuleSplit moduleSplit, int versionCode) {
+  private static ModuleSplit addVersionCode(
+      ModuleSplit moduleSplit, Optional<Integer> versionCode) {
+    if (!versionCode.isPresent()) {
+      return moduleSplit;
+    }
     return moduleSplit.toBuilder()
         .setAndroidManifest(
-            moduleSplit.getAndroidManifest().toEditor().setVersionCode(versionCode).save())
+            moduleSplit.getAndroidManifest().toEditor().setVersionCode(versionCode.get()).save())
+        .build();
+  }
+
+  private static ModuleSplit addVersionName(ModuleSplit moduleSplit, Optional<String> versionName) {
+    if (!versionName.isPresent()) {
+      return moduleSplit;
+    }
+    return moduleSplit.toBuilder()
+        .setAndroidManifest(
+            moduleSplit.getAndroidManifest().toEditor().setVersionName(versionName.get()).save())
         .build();
   }
 }

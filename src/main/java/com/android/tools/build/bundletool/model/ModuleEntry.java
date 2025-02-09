@@ -15,83 +15,150 @@
  */
 package com.android.tools.build.bundletool.model;
 
-import com.android.tools.build.bundletool.model.utils.files.FileUtils;
+import com.android.tools.build.bundletool.model.BundleModule.SpecialModuleEntry;
+import com.google.auto.value.AutoValue;
+import com.google.auto.value.extension.memoized.Memoized;
+import com.google.common.hash.HashCode;
+import com.google.common.hash.Hashing;
+import com.google.common.io.ByteSource;
+import com.google.common.io.Files;
+import com.google.common.io.MoreFiles;
 import com.google.errorprone.annotations.Immutable;
-import com.google.errorprone.annotations.MustBeClosed;
+import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.nio.file.Path;
+import java.util.Objects;
+import java.util.Optional;
 
 /**
- * Represents an entry in a an App Bundle's module.
+ * Represents an entry in an App Bundle's module.
  *
  * <p>All subclasses should be immutable, and we assume that they are as long as the data source
  * backing this entry remains unchanged.
  */
 @Immutable
-public interface ModuleEntry {
-
-  /**
-   * Returns the content of the entry as a stream of bytes.
-   *
-   * <p>Each implementation should strongly consider returning {@link java.io.BufferedInputStream}
-   * for efficiency.
-   */
-  @MustBeClosed
-  InputStream getContent();
-
-  @SuppressWarnings("MustBeClosedChecker") // InputStreamSupplier is annotated with @MustBeClosed
-  default InputStreamSupplier getContentSupplier() {
-    return () -> getContent();
-  }
+@AutoValue
+@AutoValue.CopyAnnotations
+@SuppressWarnings("Immutable")
+public abstract class ModuleEntry {
 
   /** Path of the entry inside the module. */
-  ZipPath getPath();
-
-  /** Whether the entry is a directory. */
-  boolean isDirectory();
-
-  boolean shouldCompress();
+  public abstract ZipPath getPath();
 
   /**
-   * Creates a new instance if passed shouldCompress doesnt match object's shouldCompress, otherwise
-   * returns original object.
+   * Location of the module entry in the on-disk file.
+   *
+   * <p>If the content of the entry was generated or modified by bundletool, then this method should
+   * return an empty {@link Optional}.
    */
-  ModuleEntry setCompression(boolean shouldCompress);
+  public abstract Optional<ModuleEntryLocationInZipSource> getFileLocation();
 
-  /**
-   * Creates and returns a new ModuleEntry, identical with the old one, but with a different path.
-   */
-  default ModuleEntry setPath(ZipPath newPath) {
-    return new DelegatingModuleEntry(this) {
-      @Override
-      public ZipPath getPath() {
-        return newPath;
-      }
-    };
-  }
+  /** Returns whether entry should always be left uncompressed in generated archives. */
+  public abstract boolean getForceUncompressed();
+
+  /** Returns whether entry is an embedded APK that should be signed by the output APK key. */
+  public abstract boolean getShouldSign();
+
+  /** Returns data source for this entry. */
+  public abstract ByteSource getContent();
 
   /** Checks whether the given entries are identical. */
-  static boolean equal(ModuleEntry entry1, ModuleEntry entry2) {
+  @Override
+  public final boolean equals(Object obj2) {
+    if (!(obj2 instanceof ModuleEntry)) {
+      return false;
+    }
+
+    ModuleEntry entry1 = this;
+    ModuleEntry entry2 = (ModuleEntry) obj2;
+
+    if (entry1 == entry2) {
+      return true;
+    }
+
     if (!entry1.getPath().equals(entry2.getPath())) {
       return false;
     }
 
-    if (entry1.isDirectory() != entry2.isDirectory()) {
+    if (entry1.getForceUncompressed() != entry2.getForceUncompressed()) {
       return false;
-    } else if (entry1.isDirectory() && entry2.isDirectory()) {
-      return true;
     }
 
-    try (InputStream inputStream1 = entry1.getContent();
-        InputStream inputStream2 = entry2.getContent()) {
-      return FileUtils.equalContent(inputStream1, inputStream2);
+    if (entry1.getShouldSign() != entry2.getShouldSign()) {
+      return false;
+    }
+
+    return entry1.getContentSha256Hash().equals(entry2.getContentSha256Hash());
+  }
+
+  @Memoized
+  public HashCode getContentSha256Hash() {
+    try {
+      return getContent().hash(Hashing.sha256());
     } catch (IOException e) {
       throw new UncheckedIOException(
-          String.format(
-              "Failed to compare contents of module entries '%s' and '%s'.",
-              entry1.getPath(), entry2.getPath()),
-          e);
+          String.format("Failed to calculate SHA256 hash of module entry '%s'.", this), e);
     }
+  }
+
+  @Override
+  public final int hashCode() {
+    // Deliberately omit the content for performance.
+    return Objects.hash(getPath(), getForceUncompressed());
+  }
+
+  public boolean isSpecialEntry() {
+    return SpecialModuleEntry.getSpecialEntry(getPath()).isPresent();
+  }
+
+  public abstract Builder toBuilder();
+
+  public static Builder builder() {
+    return new AutoValue_ModuleEntry.Builder().setForceUncompressed(false).setShouldSign(false);
+  }
+
+  /** Builder for {@code ModuleEntry}. */
+  @AutoValue.Builder
+  public abstract static class Builder {
+    public abstract Builder setPath(ZipPath path);
+
+    public abstract Builder setFileLocation(Optional<ModuleEntryLocationInZipSource> location);
+
+    public abstract Builder setFileLocation(ModuleEntryLocationInZipSource location);
+
+    public abstract Builder setForceUncompressed(boolean forcedUncompressed);
+
+    public abstract Builder setShouldSign(boolean shouldSign);
+
+    public abstract Builder setContent(ByteSource content);
+
+    public Builder setContent(Path path) {
+      setFileLocation(Optional.empty());
+      return setContent(MoreFiles.asByteSource(path));
+    }
+
+    public Builder setContent(File file) {
+      setFileLocation(Optional.empty());
+      return setContent(Files.asByteSource(file));
+    }
+
+    public abstract ModuleEntry build();
+  }
+
+  /** Location of a module entry in an on-disk file. */
+  @AutoValue
+  public abstract static class ModuleEntryLocationInZipSource {
+    public static ModuleEntryLocationInZipSource create(
+        Path pathToBundle, ZipPath entryPathInBundle) {
+      return new AutoValue_ModuleEntry_ModuleEntryLocationInZipSource(
+          pathToBundle, entryPathInBundle);
+    }
+
+    /** File path to the on-disk file. */
+    public abstract Path pathToFile();
+
+    /** Full path inside the file, including module name. */
+    public abstract ZipPath entryPathInFile();
   }
 }

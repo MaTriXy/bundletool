@@ -18,8 +18,18 @@ package com.android.tools.build.bundletool.testing;
 
 import com.android.bundle.Config.BundleConfig;
 import com.android.bundle.Config.Bundletool;
+import com.android.bundle.Config.Optimizations;
+import com.android.bundle.Config.ResourceOptimizations;
+import com.android.bundle.Config.ResourceOptimizations.SparseEncoding;
 import com.android.bundle.Config.SplitDimension;
+import com.android.bundle.Config.StandaloneConfig.DexMergingStrategy;
+import com.android.bundle.Config.StandaloneConfig.FeatureModulesMode;
+import com.android.bundle.Config.SuffixStripping;
+import com.android.bundle.Config.UncompressDexFiles.UncompressedDexTargetSdk;
+import com.android.bundle.Config.UncompressNativeLibraries.PageAlignment;
+import com.android.bundle.Config.UnsignedEmbeddedApkConfig;
 import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 
 /** Helper to create {@link BundleConfig} instances in tests. */
 public class BundleConfigBuilder {
@@ -47,6 +57,23 @@ public class BundleConfigBuilder {
         SplitDimension.newBuilder().setValue(splitDimension).setNegate(negate).build());
   }
 
+  public BundleConfigBuilder addSplitDimension(
+      SplitDimension.Value splitDimension,
+      boolean negate,
+      boolean stripSuffix,
+      String defaultSuffix) {
+    return addSplitDimension(
+        SplitDimension.newBuilder()
+            .setValue(splitDimension)
+            .setNegate(negate)
+            .setSuffixStripping(
+                SuffixStripping.newBuilder()
+                    .setEnabled(stripSuffix)
+                    .setDefaultSuffix(defaultSuffix)
+                    .build())
+            .build());
+  }
+
   public BundleConfigBuilder addSplitDimension(SplitDimension splitDimension) {
     builder.getOptimizationsBuilder().getSplitsConfigBuilder().addSplitDimension(splitDimension);
     return this;
@@ -57,8 +84,55 @@ public class BundleConfigBuilder {
     return this;
   }
 
+  public BundleConfigBuilder setPageAlignment(PageAlignment pageAlignment) {
+    builder
+        .getOptimizationsBuilder()
+        .getUncompressNativeLibrariesBuilder()
+        .setAlignment(pageAlignment);
+    return this;
+  }
+
   public BundleConfigBuilder setUncompressDexFiles(boolean enabled) {
     builder.getOptimizationsBuilder().getUncompressDexFilesBuilder().setEnabled(enabled);
+    return this;
+  }
+
+  @CanIgnoreReturnValue
+  public BundleConfigBuilder setUncompressDexFilesForVariant(
+      UncompressedDexTargetSdk uncompressedDexTargetSdk) {
+    builder
+        .getOptimizationsBuilder()
+        .getUncompressDexFilesBuilder()
+        .setUncompressedDexTargetSdk(uncompressedDexTargetSdk);
+    return this;
+  }
+
+  public BundleConfigBuilder setSparseEncodingForSdk32() {
+    builder.setOptimizations(
+        Optimizations.newBuilder()
+            .setResourceOptimizations(
+                ResourceOptimizations.newBuilder()
+                    .setSparseEncoding(SparseEncoding.VARIANT_FOR_SDK_32)
+                    .build())
+            .build());
+    return this;
+  }
+
+  public BundleConfigBuilder setStoreArchive(boolean enabled) {
+    builder.getOptimizationsBuilder().getStoreArchiveBuilder().setEnabled(enabled);
+    return this;
+  }
+
+  public BundleConfigBuilder setInjectLocaleConfig(boolean enabled) {
+    builder.getLocalesBuilder().setInjectLocaleConfig(enabled);
+    return this;
+  }
+
+  public BundleConfigBuilder setDexMergingStrategy(DexMergingStrategy dexMergingStrategy) {
+    builder
+        .getOptimizationsBuilder()
+        .getStandaloneConfigBuilder()
+        .setDexMergingStrategy(dexMergingStrategy);
     return this;
   }
 
@@ -69,6 +143,29 @@ public class BundleConfigBuilder {
 
   public BundleConfigBuilder addResourcePinnedToMasterSplit(int resourceId) {
     builder.getMasterResourcesBuilder().addResourceIds(resourceId);
+    return this;
+  }
+
+  public BundleConfigBuilder addStandaloneDimension(SplitDimension.Value standaloneDimension) {
+    return addStandaloneDimension(standaloneDimension, /* negate= */ false);
+  }
+
+  public BundleConfigBuilder addStandaloneDimension(
+      SplitDimension.Value standaloneDimension, boolean negate) {
+    return addStandaloneDimension(
+        SplitDimension.newBuilder().setValue(standaloneDimension).setNegate(negate).build());
+  }
+
+  public BundleConfigBuilder addStandaloneDimension(SplitDimension standaloneDimension) {
+    builder
+        .getOptimizationsBuilder()
+        .getStandaloneConfigBuilder()
+        .addSplitDimension(standaloneDimension);
+    return this;
+  }
+
+  public BundleConfigBuilder addUnsignedEmbeddedApkConfig(String path) {
+    builder.addUnsignedEmbeddedApkConfig(UnsignedEmbeddedApkConfig.newBuilder().setPath(path));
     return this;
   }
 
@@ -89,6 +186,15 @@ public class BundleConfigBuilder {
 
   public BundleConfigBuilder setVersion(String versionString) {
     builder.setBundletool(Bundletool.newBuilder().setVersion(versionString));
+    return this;
+  }
+
+  public BundleConfigBuilder setFeatureModulesModeForStandalone(
+      FeatureModulesMode featureModulesMode) {
+    builder
+        .getOptimizationsBuilder()
+        .getStandaloneConfigBuilder()
+        .setFeatureModulesMode(featureModulesMode);
     return this;
   }
 

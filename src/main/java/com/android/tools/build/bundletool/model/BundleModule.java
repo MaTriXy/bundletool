@@ -16,35 +16,45 @@
 
 package com.android.tools.build.bundletool.model;
 
-import static com.android.tools.build.bundletool.model.BundleModule.ModuleDeliveryType.ALWAYS_INITIAL_INSTALL;
-import static com.android.tools.build.bundletool.model.BundleModule.ModuleDeliveryType.CONDITIONAL_INITIAL_INSTALL;
-import static com.android.tools.build.bundletool.model.BundleModule.ModuleDeliveryType.NO_INITIAL_INSTALL;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.sdkVersionFrom;
 import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.sdkVersionTargeting;
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.function.Function.identity;
 
 import com.android.aapt.Resources.ResourceTable;
 import com.android.aapt.Resources.XmlNode;
 import com.android.bundle.Commands.DeliveryType;
+import com.android.bundle.Commands.FeatureModuleType;
 import com.android.bundle.Commands.ModuleMetadata;
-import com.android.bundle.Config.BundleConfig;
+import com.android.bundle.Commands.RuntimeEnabledSdkDependency;
+import com.android.bundle.Commands.SdkModuleMetadata;
+import com.android.bundle.Commands.SdkModuleVersion;
+import com.android.bundle.Config.ApexConfig;
+import com.android.bundle.Config.BundleConfig.BundleType;
 import com.android.bundle.Files.ApexImages;
 import com.android.bundle.Files.Assets;
 import com.android.bundle.Files.NativeLibraries;
+import com.android.bundle.RuntimeEnabledSdkConfigProto.RuntimeEnabledSdkConfig;
+import com.android.bundle.SdkModulesConfigOuterClass.RuntimeEnabledSdkVersion;
+import com.android.bundle.SdkModulesConfigOuterClass.SdkModulesConfig;
 import com.android.bundle.Targeting.ModuleTargeting;
-import com.android.tools.build.bundletool.model.utils.xmlproto.XmlProtoAttribute;
-import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
+import com.android.tools.build.bundletool.model.version.Version;
 import com.google.auto.value.AutoValue;
 import com.google.auto.value.extension.memoized.Memoized;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.Immutable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Optional;
@@ -70,12 +80,21 @@ public abstract class BundleModule {
   public static final ZipPath MANIFEST_DIRECTORY = ZipPath.create("manifest");
   public static final ZipPath RESOURCES_DIRECTORY = ZipPath.create("res");
   public static final ZipPath ROOT_DIRECTORY = ZipPath.create("root");
+  public static final ZipPath DRAWABLE_RESOURCE_DIRECTORY = ZipPath.create("res/drawable");
 
   /** The top-level directory of an App Bundle module that contains APEX image files. */
   public static final ZipPath APEX_DIRECTORY = ZipPath.create("apex");
 
+  public static final String APEX_IMAGE_SUFFIX = "img";
+  public static final String BUILD_INFO_SUFFIX = "build_info.pb";
+
   /** The file of an App Bundle module that contains the APEX manifest. */
-  public static final ZipPath APEX_MANIFEST_PATH = ZipPath.create("root/apex_manifest.json");
+  public static final ZipPath APEX_MANIFEST_PATH = ZipPath.create("root/apex_manifest.pb");
+
+  public static final ZipPath APEX_MANIFEST_JSON_PATH = ZipPath.create("root/apex_manifest.json");
+
+  /** The public key used to sign the apex */
+  public static final ZipPath APEX_PUBKEY_PATH = ZipPath.create("root/apex_pubkey");
 
   /** The NOTICE file of an APEX Bundle module. */
   public static final ZipPath APEX_NOTICE_PATH = ZipPath.create("assets/NOTICE.html.gz");
@@ -85,30 +104,44 @@ public abstract class BundleModule {
 
   public abstract BundleModuleName getName();
 
-  /** Describes how the module is delivered at install-time. */
-  public enum ModuleDeliveryType {
-    ALWAYS_INITIAL_INSTALL,
-    CONDITIONAL_INITIAL_INSTALL,
-    // Covers both on-demand and fast-follow modes.
-    NO_INITIAL_INSTALL
-  }
-
   /** Describes the content type of the module. */
   public enum ModuleType {
-    FEATURE_MODULE,
-    ASSET_MODULE
+    UNKNOWN_MODULE_TYPE(false),
+    FEATURE_MODULE(true),
+    ASSET_MODULE(false),
+    ML_MODULE(true),
+    SDK_DEPENDENCY_MODULE(true);
+
+    private final boolean isFeatureModule;
+
+    ModuleType(boolean isFeatureModule) {
+      this.isFeatureModule = isFeatureModule;
+    }
+
+    /**
+     * Returns whether the module is a feature, including ML modules and AAB modules generated from
+     * runtime-enabled SDK dependencies.
+     */
+    public boolean isFeatureModule() {
+      return isFeatureModule;
+    }
   }
 
-  /** The version of Bundletool that built this module, taken from BundleConfig. */
-  public abstract BundleConfig getBundleConfig();
+  /** BundleType of the bundle that this module belongs to. */
+  public abstract BundleType getBundleType();
 
-  abstract XmlNode getAndroidManifestProto();
+  /** Version of Bundeltool used to build the bundle that this module belongs to. */
+  public abstract Version getBundletoolVersion();
+
+  public abstract XmlNode getAndroidManifestProto();
 
   @Memoized
   public AndroidManifest getAndroidManifest() {
-    return AndroidManifest.create(
-        getAndroidManifestProto(), BundleToolVersion.getVersionFromBundleConfig(getBundleConfig()));
+    return AndroidManifest.create(getAndroidManifestProto(), getBundletoolVersion());
   }
+
+  /** ApexConfig of the bundle that this module belongs to. */
+  public abstract Optional<ApexConfig> getBundleApexConfig();
 
   public abstract Optional<ResourceTable> getResourceTable();
 
@@ -118,6 +151,20 @@ public abstract class BundleModule {
 
   public abstract Optional<ApexImages> getApexConfig();
 
+  public abstract Optional<RuntimeEnabledSdkConfig> getRuntimeEnabledSdkConfig();
+
+  /**
+   * Only present for modules of type SDK_DEPENDENCY_MODULE in app bundles, as well as in SDK
+   * bundles and ASARs.
+   */
+  public abstract Optional<SdkModulesConfig> getSdkModulesConfig();
+
+  /**
+   * Package ID of resources of this module. Only set for modules of type SDK_DEPENDENCY_MODULE in
+   * app bundles.
+   */
+  public abstract Optional<Integer> getResourcesPackageId();
+
   /**
    * Returns entries of the module, indexed by their module path.
    *
@@ -125,6 +172,8 @@ public abstract class BundleModule {
    * entries.
    */
   abstract ImmutableMap<ZipPath, ModuleEntry> getEntryMap();
+
+  public abstract ModuleType getModuleType();
 
   /**
    * Returns entries of the module.
@@ -141,59 +190,26 @@ public abstract class BundleModule {
   }
 
   public ModuleDeliveryType getDeliveryType() {
-    if (getAndroidManifest().getManifestDeliveryElement().isPresent()) {
-      ManifestDeliveryElement manifestDeliveryElement =
-          getAndroidManifest().getManifestDeliveryElement().get();
-      if (manifestDeliveryElement.hasInstallTimeElement()) {
-        return manifestDeliveryElement.hasModuleConditions()
-            ? CONDITIONAL_INITIAL_INSTALL
-            : ALWAYS_INITIAL_INSTALL;
-      } else {
-        return NO_INITIAL_INSTALL;
-      }
-    }
-
-    // Handling legacy on-demand attribute value.
-    if (getAndroidManifest()
-        .getOnDemandAttribute()
-        .map(XmlProtoAttribute::getValueAsBoolean)
-        .orElse(false)) {
-      return NO_INITIAL_INSTALL;
-    }
-
-    // Legacy onDemand attribute is equal to false or for base module: no delivery information.
-    return ALWAYS_INITIAL_INSTALL;
+    return getAndroidManifest().getModuleDeliveryType();
   }
 
   public Optional<ModuleDeliveryType> getInstantDeliveryType() {
     if (!isInstantModule()) {
       return Optional.empty();
     }
-    if (getAndroidManifest().getInstantManifestDeliveryElement().isPresent()) {
-      ManifestDeliveryElement instantManifestDeliveryElement =
-          getAndroidManifest().getInstantManifestDeliveryElement().get();
-      if (instantManifestDeliveryElement.hasInstallTimeElement()) {
-        return instantManifestDeliveryElement.hasModuleConditions()
-            ? Optional.of(CONDITIONAL_INITIAL_INSTALL)
-            : Optional.of(ALWAYS_INITIAL_INSTALL);
-      } else {
-        return Optional.of(NO_INITIAL_INSTALL);
-      }
-    }
-
-    // Handling dist:instant attribute value.
-    return Optional.of(NO_INITIAL_INSTALL);
-  }
-
-  public ModuleType getModuleType() {
-    // If the module type is not defined in the manifest, default to feature module for backwards
-    // compatibility.
-    return getAndroidManifest().getModuleType();
+    return Optional.of(getAndroidManifest().getInstantModuleDeliveryType());
   }
 
   public boolean isIncludedInFusing() {
     // The following should never throw if the module/bundle has been validated.
-    return isBaseModule() || getAndroidManifest().getIsModuleIncludedInFusing().get();
+    return isBaseModule()
+        || getAndroidManifest()
+            .getIsModuleIncludedInFusing()
+            .orElseThrow(
+                () ->
+                    InvalidBundleException.createWithUserMessage(
+                        "Unable to determine if module should be fused: missing <dist:fusing> tag"
+                            + " inside <dist:module> in AndroidManifest.xml"));
   }
 
   public boolean isInstantModule() {
@@ -208,6 +224,12 @@ public abstract class BundleModule {
 
   public ImmutableList<String> getDependencies() {
     return getAndroidManifest().getUsesSplits();
+  }
+
+  public int getSdkPatchVersionOrThrow() {
+    return getSdkModulesConfig()
+        .map(sdkModulesConfig -> sdkModulesConfig.getSdkVersion().getPatch())
+        .orElseThrow(() -> new IllegalStateException("SdkModulesConfig expected to be present."));
   }
 
   private ModuleTargeting getModuleTargeting() {
@@ -230,8 +252,7 @@ public abstract class BundleModule {
       return moduleTargeting;
     }
 
-    return moduleTargeting
-        .toBuilder()
+    return moduleTargeting.toBuilder()
         .setSdkVersionTargeting(sdkVersionTargeting(sdkVersionFrom(minSdkVersion.get())))
         .build();
   }
@@ -263,13 +284,69 @@ public abstract class BundleModule {
   }
 
   public ModuleMetadata getModuleMetadata() {
-    return ModuleMetadata.newBuilder()
-        .setName(getName().getName())
-        .setIsInstant(isInstantModule())
-        .addAllDependencies(getDependencies())
-        .setTargeting(getModuleTargeting())
-        .setDeliveryType(moduleDeliveryTypeToDeliveryType(getDeliveryType()))
-        .build();
+    return getModuleMetadata(/* isSdkRuntimeVariant= */ false);
+  }
+
+  public ModuleMetadata getModuleMetadata(boolean isSdkRuntimeVariant) {
+    ModuleMetadata.Builder moduleMetadata =
+        ModuleMetadata.newBuilder()
+            .setName(getName().getName())
+            .setIsInstant(isInstantModule())
+            .addAllDependencies(getDependencies())
+            .setTargeting(getModuleTargeting())
+            .setDeliveryType(moduleDeliveryTypeToDeliveryType(getDeliveryType()));
+
+    moduleTypeToFeatureModuleType(getModuleType()).ifPresent(moduleMetadata::setModuleType);
+
+    getSdkModuleMetadata().ifPresent(moduleMetadata::setSdkModuleMetadata);
+    if (isSdkRuntimeVariant) {
+      getRuntimeEnabledSdkConfig()
+          .ifPresent(
+              runtimeEnabledSdkConfig ->
+                  moduleMetadata.addAllRuntimeEnabledSdkDependencies(
+                      runtimeEnabledDependenciesFromConfig(runtimeEnabledSdkConfig)));
+    }
+
+    return moduleMetadata.build();
+  }
+
+  private Optional<SdkModuleMetadata> getSdkModuleMetadata() {
+    if (getModuleType().equals(ModuleType.SDK_DEPENDENCY_MODULE)) {
+      SdkModulesConfig sdkModulesConfig =
+          getSdkModulesConfig()
+              .orElseThrow(
+                  () ->
+                      new IllegalStateException(
+                          "SDK_DEPENDENCY_MODULE does not have SdkModulesConfig set."));
+      int resourcesPackageId =
+          getResourcesPackageId()
+              .orElseThrow(
+                  () ->
+                      new IllegalStateException(
+                          "SDK_DEPENDENCY_MODULE does not have ResourcesPackageId set."));
+      return Optional.of(
+          SdkModuleMetadata.newBuilder()
+              .setSdkPackageName(sdkModulesConfig.getSdkPackageName())
+              .setSdkModuleVersion(
+                  runtimeEnabledSdkVersionToModuleMetadataConverter(
+                      sdkModulesConfig.getSdkVersion()))
+              .setResourcesPackageId(resourcesPackageId)
+              .build());
+    }
+    return Optional.empty();
+  }
+
+  private static ImmutableSet<RuntimeEnabledSdkDependency> runtimeEnabledDependenciesFromConfig(
+      RuntimeEnabledSdkConfig runtimeEnabledSdkConfig) {
+    return runtimeEnabledSdkConfig.getRuntimeEnabledSdkList().stream()
+        .map(
+            runtimeEnabledSdk ->
+                RuntimeEnabledSdkDependency.newBuilder()
+                    .setPackageName(runtimeEnabledSdk.getPackageName())
+                    .setMajorVersion(runtimeEnabledSdk.getVersionMajor())
+                    .setMinorVersion(runtimeEnabledSdk.getVersionMinor())
+                    .build())
+        .collect(toImmutableSet());
   }
 
   private static DeliveryType moduleDeliveryTypeToDeliveryType(
@@ -284,8 +361,32 @@ public abstract class BundleModule {
     throw new IllegalArgumentException("Unknown module delivery type: " + moduleDeliveryType);
   }
 
+  private static Optional<FeatureModuleType> moduleTypeToFeatureModuleType(ModuleType moduleType) {
+    switch (moduleType) {
+      case FEATURE_MODULE:
+        return Optional.of(FeatureModuleType.FEATURE_MODULE);
+      case SDK_DEPENDENCY_MODULE:
+        return Optional.of(FeatureModuleType.SDK_MODULE);
+      case ML_MODULE:
+        return Optional.of(FeatureModuleType.ML_MODULE);
+      case ASSET_MODULE:
+      case UNKNOWN_MODULE_TYPE:
+        return Optional.empty();
+    }
+    throw new IllegalArgumentException("Unknown module type: " + moduleType);
+  }
+
+  private static SdkModuleVersion runtimeEnabledSdkVersionToModuleMetadataConverter(
+      RuntimeEnabledSdkVersion runtimeEnabledSdkVersion) {
+    return SdkModuleVersion.newBuilder()
+        .setMajor(runtimeEnabledSdkVersion.getMajor())
+        .setMinor(runtimeEnabledSdkVersion.getMinor())
+        .setPatch(runtimeEnabledSdkVersion.getPatch())
+        .build();
+  }
+
   public static Builder builder() {
-    return new AutoValue_BundleModule.Builder();
+    return new AutoValue_BundleModule.Builder().setModuleType(ModuleType.UNKNOWN_MODULE_TYPE);
   }
 
   public abstract Builder toBuilder();
@@ -295,7 +396,11 @@ public abstract class BundleModule {
   public abstract static class Builder {
     public abstract Builder setName(BundleModuleName value);
 
-    public abstract Builder setBundleConfig(BundleConfig value);
+    public abstract Builder setBundleType(BundleType bundleType);
+
+    public abstract Builder setBundletoolVersion(Version version);
+
+    public abstract Builder setBundleApexConfig(ApexConfig apexConfig);
 
     public abstract Builder setResourceTable(ResourceTable resourceTable);
 
@@ -311,6 +416,15 @@ public abstract class BundleModule {
 
     public abstract Builder setApexConfig(ApexImages apexConfig);
 
+    public abstract Builder setRuntimeEnabledSdkConfig(
+        RuntimeEnabledSdkConfig runtimeEnabledSdkConfig);
+
+    public abstract Builder setSdkModulesConfig(SdkModulesConfig sdkModulesConfig);
+
+    public abstract Builder setResourcesPackageId(int resourcesPackageId);
+
+    public abstract Builder setModuleType(ModuleType moduleType);
+
     abstract ImmutableMap.Builder<ZipPath, ModuleEntry> entryMapBuilder();
 
     abstract Builder setEntryMap(ImmutableMap<ZipPath, ModuleEntry> entryMap);
@@ -322,6 +436,7 @@ public abstract class BundleModule {
      * Thus, prefer using the {@link #addEntry(ModuleEntry)} method when possible, since it also
      * accepts the special files.
      */
+    @CanIgnoreReturnValue
     public Builder setRawEntries(Collection<ModuleEntry> entries) {
       entries.forEach(
           entry ->
@@ -333,8 +448,9 @@ public abstract class BundleModule {
       return this;
     }
 
-    /** @see #addEntry(ModuleEntry) */
-    public Builder addEntries(Collection<ModuleEntry> entries) throws IOException {
+    /** See {@link #addEntry(ModuleEntry)}. */
+    @CanIgnoreReturnValue
+    public Builder addEntries(Collection<ModuleEntry> entries) {
       for (ModuleEntry entry : entries) {
         addEntry(entry);
       }
@@ -346,24 +462,53 @@ public abstract class BundleModule {
      *
      * <p>Certain files (eg. AndroidManifest.xml and several module meta-data files) are immediately
      * parsed and stored in dedicated class fields instead of as entries.
-     *
-     * @throws IOException when the entry cannot be read or has invalid contents
      */
-    public Builder addEntry(ModuleEntry moduleEntry) throws IOException {
+    @CanIgnoreReturnValue
+    public Builder addEntry(ModuleEntry moduleEntry) {
       Optional<SpecialModuleEntry> specialEntry =
           SpecialModuleEntry.getSpecialEntry(moduleEntry.getPath());
       if (specialEntry.isPresent()) {
-        try (InputStream inputStream = moduleEntry.getContent()) {
+        try (InputStream inputStream = moduleEntry.getContent().openStream()) {
           specialEntry.get().addToModule(this, inputStream);
+        } catch (IOException e) {
+          throw new UncheckedIOException(e);
         }
-      } else if (!moduleEntry.isDirectory()) {
+      } else {
         entryMapBuilder().put(moduleEntry.getPath(), moduleEntry);
       }
 
       return this;
     }
 
-    public abstract BundleModule build();
+    abstract Optional<XmlNode> getAndroidManifestProto();
+
+    public boolean hasAndroidManifest() {
+      return getAndroidManifestProto().isPresent();
+    }
+
+    public abstract BundleModuleName getName();
+
+    abstract BundleModule autoBuild();
+
+    public final BundleModule build() {
+      BundleModule bundleModule = autoBuild();
+      // If module type is not explicitly set, we are reading it from the manifest.
+      if (bundleModule.getModuleType().equals(ModuleType.UNKNOWN_MODULE_TYPE)) {
+        bundleModule =
+            bundleModule.toBuilder()
+                .setModuleType(bundleModule.getAndroidManifest().getModuleType())
+                .build();
+      }
+      checkState(
+          !bundleModule.getModuleType().equals(ModuleType.SDK_DEPENDENCY_MODULE)
+              || bundleModule.getSdkModulesConfig().isPresent(),
+          "BundleModule of type SDK_DEPENDENCY_MODULE can not have empty SdkModulesConfig.");
+      checkState(
+          !bundleModule.getModuleType().equals(ModuleType.SDK_DEPENDENCY_MODULE)
+              || bundleModule.getResourcesPackageId().isPresent(),
+          "BundleModule of type SDK_DEPENDENCY_MODULE can not have empty ResourcesPackageId.");
+      return bundleModule;
+    }
   }
 
   /**
@@ -400,6 +545,12 @@ public abstract class BundleModule {
       @Override
       void addToModule(BundleModule.Builder module, InputStream inputStream) throws IOException {
         module.setApexConfig(ApexImages.parseFrom(inputStream));
+      }
+    },
+    RUNTIME_ENABLED_SDK_CONFIG("runtime_enabled_sdk_config.pb") {
+      @Override
+      void addToModule(BundleModule.Builder module, InputStream inputStream) throws IOException {
+        module.setRuntimeEnabledSdkConfig(RuntimeEnabledSdkConfig.parseFrom(inputStream));
       }
     };
 

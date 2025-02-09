@@ -24,8 +24,6 @@ import static com.android.tools.build.bundletool.model.utils.files.FilePrecondit
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import com.android.tools.build.bundletool.model.utils.OsPlatform;
-import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -65,23 +63,6 @@ public class FilePreconditionsTest {
     IllegalArgumentException exception =
         assertThrows(IllegalArgumentException.class, () -> checkFileExistsAndReadable(nonExistent));
     assertThat(exception).hasMessageThat().matches("File '.*' was not found.");
-  }
-
-  @Test
-  public void checkFileExistsAndReadable_nonReadable_fail() throws Exception {
-    // "File.setReadable(false)" does not work on Windows.
-    if (OsPlatform.getCurrentPlatform().equals(OsPlatform.WINDOWS)) {
-      return;
-    }
-
-    File unreadableFile = tmp.newFile();
-    unreadableFile.setReadable(false);
-
-    IllegalArgumentException exception =
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> checkFileExistsAndReadable(unreadableFile.toPath()));
-    assertThat(exception).hasMessageThat().matches("File '.*' is not readable.");
   }
 
   @Test

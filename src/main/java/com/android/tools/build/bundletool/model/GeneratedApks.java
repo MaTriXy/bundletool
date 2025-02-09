@@ -16,17 +16,16 @@
 
 package com.android.tools.build.bundletool.model;
 
+import static com.android.tools.build.bundletool.model.utils.CollectorUtils.groupingByDeterministic;
 import static com.android.tools.build.bundletool.model.utils.CollectorUtils.groupingBySortedKeys;
-import static com.google.common.collect.ImmutableList.toImmutableList;
-import static java.util.stream.Collectors.groupingBy;
 
 import com.android.tools.build.bundletool.model.ModuleSplit.SplitType;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.errorprone.annotations.Immutable;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
@@ -42,17 +41,30 @@ public abstract class GeneratedApks {
 
   public abstract ImmutableList<ModuleSplit> getStandaloneApks();
 
+  public abstract ImmutableList<ModuleSplit> getStandaloneFeatureModuleApks();
+
   public abstract ImmutableList<ModuleSplit> getSystemApks();
+
+  // There is alsways a single archived APK. List type is used for consistency.
+  public abstract ImmutableList<ModuleSplit> getArchivedApks();
 
   public int size() {
     return getInstantApks().size()
         + getSplitApks().size()
         + getStandaloneApks().size()
-        + getSystemApks().size();
+        + getStandaloneFeatureModuleApks().size()
+        + getSystemApks().size()
+        + getArchivedApks().size();
   }
 
   public Stream<ModuleSplit> getAllApksStream() {
-    return Stream.of(getStandaloneApks(), getInstantApks(), getSplitApks(), getSystemApks())
+    return Stream.of(
+            getStandaloneApks(),
+            getStandaloneFeatureModuleApks(),
+            getInstantApks(),
+            getSplitApks(),
+            getSystemApks(),
+            getArchivedApks())
         .flatMap(List::stream);
   }
 
@@ -67,20 +79,26 @@ public abstract class GeneratedApks {
         .setInstantApks(ImmutableList.of())
         .setSplitApks(ImmutableList.of())
         .setStandaloneApks(ImmutableList.of())
-        .setSystemApks(ImmutableList.of());
+        .setStandaloneFeatureModuleApks(ImmutableList.of())
+        .setSystemApks(ImmutableList.of())
+        .setArchivedApks(ImmutableList.of());
   }
 
   /** Creates a GeneratedApk instance from a list of module splits. */
   public static GeneratedApks fromModuleSplits(ImmutableList<ModuleSplit> moduleSplits) {
-    Map<SplitType, ImmutableList<ModuleSplit>> groups =
-        moduleSplits.stream().collect(groupingBy(ModuleSplit::getSplitType, toImmutableList()));
+    ImmutableMap<SplitType, ImmutableList<ModuleSplit>> groups =
+        moduleSplits.stream().collect(groupingByDeterministic(ModuleSplit::getSplitType));
     return builder()
         .setInstantApks(groups.getOrDefault(SplitType.INSTANT, ImmutableList.of()))
         .setSplitApks(groups.getOrDefault(SplitType.SPLIT, ImmutableList.of()))
         .setStandaloneApks(groups.getOrDefault(SplitType.STANDALONE, ImmutableList.of()))
+        .setStandaloneFeatureModuleApks(
+            groups.getOrDefault(SplitType.STANDALONE_FEATURE_MODULE, ImmutableList.of()))
         .setSystemApks(groups.getOrDefault(SplitType.SYSTEM, ImmutableList.of()))
+        .setArchivedApks(groups.getOrDefault(SplitType.ARCHIVE, ImmutableList.of()))
         .build();
   }
+
   /** Builder for {@link GeneratedApks}. */
   @AutoValue.Builder
   public abstract static class Builder {
@@ -91,7 +109,12 @@ public abstract class GeneratedApks {
 
     public abstract Builder setStandaloneApks(ImmutableList<ModuleSplit> standaloneApks);
 
+    public abstract Builder setStandaloneFeatureModuleApks(
+        ImmutableList<ModuleSplit> standaloneApks);
+
     public abstract Builder setSystemApks(ImmutableList<ModuleSplit> systemApks);
+
+    public abstract Builder setArchivedApks(ImmutableList<ModuleSplit> archivedApks);
 
     public abstract GeneratedApks build();
   }

@@ -35,21 +35,21 @@ import com.android.aapt.Resources.ResourceTable;
 import com.android.bundle.Commands.ApkDescription;
 import com.android.bundle.Commands.ApkSet;
 import com.android.bundle.Commands.BuildApksResult;
-import com.android.tools.build.bundletool.io.AppBundleSerializer;
-import com.android.tools.build.bundletool.model.Aapt2Command;
+import com.android.bundle.Commands.Variant;
 import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.testing.Aapt2Helper;
 import com.android.tools.build.bundletool.testing.AppBundleBuilder;
 import com.android.tools.build.bundletool.testing.BundleConfigBuilder;
 import com.android.tools.build.bundletool.testing.ResourceTableBuilder;
+import com.android.tools.build.bundletool.testing.TestModule;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
+import dagger.Component;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.zip.ZipFile;
+import javax.inject.Inject;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -61,20 +61,15 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class BuildApksResourcePinningTest {
 
-  private final AppBundleSerializer bundleSerializer = new AppBundleSerializer();
-
   @Rule public final TemporaryFolder tmp = new TemporaryFolder();
-  private Path tmpDir;
 
-  private Path bundlePath;
   private Path outputDir;
   private Path outputFilePath;
-  private final Aapt2Command aapt2Command = Aapt2Helper.getAapt2Command();
+
+  @Inject BuildApksManager buildApksManager;
 
   @Before
   public void setUp() throws Exception {
-    tmpDir = tmp.getRoot().toPath();
-    bundlePath = tmpDir.resolve("bundle");
     outputDir = tmp.newFolder("output").toPath();
     outputFilePath = outputDir.resolve("app.apks");
   }
@@ -165,17 +160,11 @@ public class BuildApksResourcePinningTest {
                     .build())
             .build();
 
-    bundleSerializer.writeToDisk(appBundle, bundlePath);
+    TestComponent.useTestModule(
+        this, TestModule.builder().withAppBundle(appBundle).withOutputPath(outputFilePath).build());
 
-    BuildApksCommand command =
-        BuildApksCommand.builder()
-            .setBundlePath(bundlePath)
-            .setOutputFile(outputFilePath)
-            .setAapt2Command(aapt2Command)
-            .build();
-
-    Path apkSetFilePath = new BuildApksManager(command, aapt2Command, tmpDir).execute();
-    ZipFile apkSetFile = new ZipFile(apkSetFilePath.toFile());
+    buildApksManager.execute();
+    ZipFile apkSetFile = new ZipFile(outputFilePath.toFile());
     BuildApksResult result = extractTocFromApkSetFile(apkSetFile, outputDir);
 
     // Verifying that standalone APKs contain all entries.
@@ -202,57 +191,76 @@ public class BuildApksResourcePinningTest {
     }
 
     // Verifying split APKs.
-    assertThat(splitApkVariants(result)).hasSize(1);
-    List<ApkSet> splitApkSetList = splitApkVariants(result).get(0).getApkSetList();
-    Map<String, ApkSet> modules =
-        Maps.uniqueIndex(splitApkSetList, apkSet -> apkSet.getModuleMetadata().getName());
-    assertThat(modules.keySet()).containsExactly("base", "feature");
+    assertThat(splitApkVariants(result)).hasSize(2);
+    for (Variant variant : splitApkVariants(result)) {
+      List<ApkSet> splitApkSetList = variant.getApkSetList();
+      ImmutableMap<String, ApkSet> modules =
+          Maps.uniqueIndex(splitApkSetList, apkSet -> apkSet.getModuleMetadata().getName());
+      assertThat(modules.keySet()).containsExactly("base", "feature");
 
-    List<ApkDescription> baseModuleApks = modules.get("base").getApkDescriptionList();
-    assertThat(baseModuleApks).hasSize(2);
-    Map<Boolean, ApkDescription> apkBaseMaster =
-        Maps.uniqueIndex(
-            baseModuleApks,
-            apkDescription -> apkDescription.getSplitApkMetadata().getIsMasterSplit());
+      List<ApkDescription> baseModuleApks = modules.get("base").getApkDescriptionList();
+      assertThat(baseModuleApks).hasSize(2);
+      ImmutableMap<Boolean, ApkDescription> apkBaseMaster =
+          Maps.uniqueIndex(
+              baseModuleApks,
+              apkDescription -> apkDescription.getSplitApkMetadata().getIsMasterSplit());
 
-    ApkDescription baseMaster = apkBaseMaster.get(/* isMasterSplit= */ true);
-    File baseMasterFile = extractFromApkSetFile(apkSetFile, baseMaster.getPath(), outputDir);
-    try (ZipFile baseMasterZip = new ZipFile(baseMasterFile)) {
-      assertThat(filesUnderPath(baseMasterZip, ZipPath.create("res")))
-          .containsExactly(
-              "res/drawable/image1.jpg",
-              "res/drawable-fr/image1.jpg",
-              "res/drawable/image2.jpg",
-              "res/xml/splits0.xml");
+      ApkDescription baseMaster = apkBaseMaster.get(true);
+      File baseMasterFile = extractFromApkSetFile(apkSetFile, baseMaster.getPath(), outputDir);
+      try (ZipFile baseMasterZip = new ZipFile(baseMasterFile)) {
+        assertThat(filesUnderPath(baseMasterZip, ZipPath.create("res")))
+            .containsExactly(
+                "res/drawable/image1.jpg",
+                "res/drawable-fr/image1.jpg",
+                "res/drawable/image2.jpg",
+                "res/xml/splits0.xml");
+
+        ApkDescription baseFr = apkBaseMaster.get(false);
+        File baseFrFile = extractFromApkSetFile(apkSetFile, baseFr.getPath(), outputDir);
+        try (ZipFile baseFrZip = new ZipFile(baseFrFile)) {
+          assertThat(filesUnderPath(baseFrZip, ZipPath.create("res")))
+              .containsExactly("res/drawable-fr/image2.jpg");
+        }
+
+        List<ApkDescription> featureModuleApks = modules.get("feature").getApkDescriptionList();
+        assertThat(featureModuleApks).hasSize(2);
+        ImmutableMap<Boolean, ApkDescription> apkFeatureMaster =
+            Maps.uniqueIndex(
+                featureModuleApks,
+                apkDescription -> apkDescription.getSplitApkMetadata().getIsMasterSplit());
+
+        ApkDescription featureMaster = apkFeatureMaster.get(true);
+        File featureMasterFile =
+            extractFromApkSetFile(apkSetFile, featureMaster.getPath(), outputDir);
+        try (ZipFile featureMasterZip = new ZipFile(featureMasterFile)) {
+          assertThat(filesUnderPath(featureMasterZip, ZipPath.create("res")))
+              .containsExactly(
+                  "res/drawable/image3.jpg",
+                  "res/drawable/image4.jpg",
+                  "res/drawable-fr/image4.jpg");
+        }
+
+        ApkDescription featureFr = apkFeatureMaster.get(false);
+        File featureFrFile = extractFromApkSetFile(apkSetFile, featureFr.getPath(), outputDir);
+        try (ZipFile featureFrZip = new ZipFile(featureFrFile)) {
+          assertThat(filesUnderPath(featureFrZip, ZipPath.create("res")))
+              .containsExactly("res/drawable-fr/image3.jpg");
+        }
+      }
     }
+  }
 
-    ApkDescription baseFr = apkBaseMaster.get(/* isMasterSplit= */ false);
-    File baseFrFile = extractFromApkSetFile(apkSetFile, baseFr.getPath(), outputDir);
-    try (ZipFile baseFrZip = new ZipFile(baseFrFile)) {
-      assertThat(filesUnderPath(baseFrZip, ZipPath.create("res")))
-          .containsExactly("res/drawable-fr/image2.jpg");
-    }
+  @CommandScoped
+  @Component(modules = {BuildApksModule.class, TestModule.class})
+  interface TestComponent {
 
-    List<ApkDescription> featureModuleApks = modules.get("feature").getApkDescriptionList();
-    assertThat(featureModuleApks).hasSize(2);
-    Map<Boolean, ApkDescription> apkFeatureMaster =
-        Maps.uniqueIndex(
-            featureModuleApks,
-            apkDescription -> apkDescription.getSplitApkMetadata().getIsMasterSplit());
+    void inject(BuildApksResourcePinningTest test);
 
-    ApkDescription featureMaster = apkFeatureMaster.get(/* isMasterSplit= */ true);
-    File featureMasterFile = extractFromApkSetFile(apkSetFile, featureMaster.getPath(), outputDir);
-    try (ZipFile featureMasterZip = new ZipFile(featureMasterFile)) {
-      assertThat(filesUnderPath(featureMasterZip, ZipPath.create("res")))
-          .containsExactly(
-              "res/drawable/image3.jpg", "res/drawable/image4.jpg", "res/drawable-fr/image4.jpg");
-    }
-
-    ApkDescription featureFr = apkFeatureMaster.get(/* isMasterSplit= */ false);
-    File featureFrFile = extractFromApkSetFile(apkSetFile, featureFr.getPath(), outputDir);
-    try (ZipFile featureFrZip = new ZipFile(featureFrFile)) {
-      assertThat(filesUnderPath(featureFrZip, ZipPath.create("res")))
-          .containsExactly("res/drawable-fr/image3.jpg");
+    static void useTestModule(BuildApksResourcePinningTest testInstance, TestModule testModule) {
+      DaggerBuildApksResourcePinningTest_TestComponent.builder()
+          .testModule(testModule)
+          .build()
+          .inject(testInstance);
     }
   }
 }

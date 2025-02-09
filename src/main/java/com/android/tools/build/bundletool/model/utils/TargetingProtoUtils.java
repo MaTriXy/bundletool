@@ -16,20 +16,23 @@
 
 package com.android.tools.build.bundletool.model.utils;
 
-import static com.android.bundle.Targeting.ScreenDensity.DensityOneofCase.DENSITY_ALIAS;
-import static com.android.tools.build.bundletool.model.utils.ResourcesUtils.DENSITY_ALIAS_TO_DPI_MAP;
 import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_L_API_VERSION;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 
 import com.android.bundle.Targeting.Abi;
 import com.android.bundle.Targeting.ApkTargeting;
 import com.android.bundle.Targeting.AssetsDirectoryTargeting;
+import com.android.bundle.Targeting.MultiAbi;
 import com.android.bundle.Targeting.ScreenDensity;
 import com.android.bundle.Targeting.ScreenDensityTargeting;
+import com.android.bundle.Targeting.SdkRuntimeTargeting;
 import com.android.bundle.Targeting.SdkVersion;
 import com.android.bundle.Targeting.SdkVersionTargeting;
+import com.android.bundle.Targeting.TextureCompressionFormat;
 import com.android.bundle.Targeting.VariantTargeting;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.MoreCollectors;
+import com.google.common.collect.Streams;
 import com.google.protobuf.Int32Value;
 import java.util.Optional;
 
@@ -45,11 +48,6 @@ public final class TargetingProtoUtils {
           .getTextureCompressionFormatBuilder()
           .addAllAlternatives(targeting.getTextureCompressionFormat().getValueList());
     }
-    if (targeting.hasGraphicsApi()) {
-      alternativeTargeting
-          .getGraphicsApiBuilder()
-          .addAllAlternatives(targeting.getGraphicsApi().getValueList());
-    }
     if (targeting.hasAbi()) {
       alternativeTargeting.getAbiBuilder().addAllAlternatives(targeting.getAbi().getValueList());
     }
@@ -58,7 +56,40 @@ public final class TargetingProtoUtils {
           .getLanguageBuilder()
           .addAllAlternatives(targeting.getLanguage().getValueList());
     }
+    if (targeting.hasDeviceTier()) {
+      alternativeTargeting
+          .getDeviceTierBuilder()
+          .addAllAlternatives(targeting.getDeviceTier().getValueList());
+    }
+    if (targeting.hasDeviceGroup()) {
+      alternativeTargeting
+          .getDeviceGroupBuilder()
+          .addAllAlternatives(targeting.getDeviceGroup().getValueList());
+    }
+    if (targeting.hasCountrySet()) {
+      alternativeTargeting
+          .getCountrySetBuilder()
+          .addAllAlternatives(targeting.getCountrySet().getValueList());
+    }
     return alternativeTargeting.build();
+  }
+
+  /** Extracts multi-ABI values from the targeting. */
+  public static ImmutableSet<MultiAbi> multiAbiValues(ApkTargeting targeting) {
+    return ImmutableSet.copyOf(targeting.getMultiAbiTargeting().getValueList());
+  }
+
+  /** Extracts multi-ABI alternatives from the targeting. */
+  public static ImmutableSet<MultiAbi> multiAbiAlternatives(ApkTargeting targeting) {
+    return ImmutableSet.copyOf(targeting.getMultiAbiTargeting().getAlternativesList());
+  }
+
+  /** Extracts targeted multi-ABI universe (values and alternatives) from the targeting. */
+  public static ImmutableSet<MultiAbi> multiAbiUniverse(ApkTargeting targeting) {
+    return ImmutableSet.<MultiAbi>builder()
+        .addAll(multiAbiValues(targeting))
+        .addAll(multiAbiAlternatives(targeting))
+        .build();
   }
 
   /** Extracts ABI values from the targeting. */
@@ -115,6 +146,69 @@ public final class TargetingProtoUtils {
         .build();
   }
 
+  /** Extracts Texture Compression Format values from the targeting. */
+  public static ImmutableSet<TextureCompressionFormat> textureCompressionFormatValues(
+      ApkTargeting targeting) {
+    return ImmutableSet.copyOf(targeting.getTextureCompressionFormatTargeting().getValueList());
+  }
+
+  /** Extracts Texture Compression Format alternatives from the targeting. */
+  public static ImmutableSet<TextureCompressionFormat> textureCompressionFormatAlternatives(
+      ApkTargeting targeting) {
+    return ImmutableSet.copyOf(
+        targeting.getTextureCompressionFormatTargeting().getAlternativesList());
+  }
+
+  /**
+   * Extracts targeted Texture Compression Format universe (values and alternatives) from the
+   * targeting.
+   */
+  public static ImmutableSet<TextureCompressionFormat> textureCompressionFormatUniverse(
+      ApkTargeting targeting) {
+    return ImmutableSet.<TextureCompressionFormat>builder()
+        .addAll(textureCompressionFormatValues(targeting))
+        .addAll(textureCompressionFormatAlternatives(targeting))
+        .build();
+  }
+
+  /** Extracts Texture Compression Format values from the targeting. */
+  public static ImmutableSet<Integer> deviceTierValues(ApkTargeting targeting) {
+    return targeting.getDeviceTierTargeting().getValueList().stream()
+        .map(Int32Value::getValue)
+        .collect(toImmutableSet());
+  }
+
+  /** Extracts targeted Device Tier universe (values and alternatives) from the targeting. */
+  public static ImmutableSet<Integer> deviceTierUniverse(ApkTargeting targeting) {
+    return Streams.concat(
+            targeting.getDeviceTierTargeting().getValueList().stream(),
+            targeting.getDeviceTierTargeting().getAlternativesList().stream())
+        .map(Int32Value::getValue)
+        .collect(toImmutableSet());
+  }
+
+  public static ImmutableSet<String> deviceGroupUniverse(ApkTargeting targeting) {
+    return Streams.concat(
+            targeting.getDeviceGroupTargeting().getValueList().stream(),
+            targeting.getDeviceGroupTargeting().getAlternativesList().stream())
+        .collect(toImmutableSet());
+  }
+
+  public static ImmutableSet<String> deviceGroupValues(ApkTargeting targeting) {
+    return ImmutableSet.copyOf(targeting.getDeviceGroupTargeting().getValueList());
+  }
+
+  public static ImmutableSet<String> countrySetUniverse(ApkTargeting targeting) {
+    return Streams.concat(
+            targeting.getCountrySetTargeting().getValueList().stream(),
+            targeting.getCountrySetTargeting().getAlternativesList().stream())
+        .collect(toImmutableSet());
+  }
+
+  public static ImmutableSet<String> countrySetValues(ApkTargeting targeting) {
+    return ImmutableSet.copyOf(targeting.getCountrySetTargeting().getValueList());
+  }
+
   public static SdkVersion sdkVersionFrom(int from) {
     return SdkVersion.newBuilder().setMin(Int32Value.newBuilder().setValue(from)).build();
   }
@@ -139,6 +233,21 @@ public final class TargetingProtoUtils {
     return variantTargeting(sdkVersionTargeting(sdkVersionFrom(ANDROID_L_API_VERSION)));
   }
 
+  public static VariantTargeting sdkRuntimeVariantTargeting(SdkVersion sdkVersion) {
+    return sdkRuntimeVariantTargeting(sdkVersion, /* alternativeSdkVersions= */ ImmutableSet.of());
+  }
+
+  public static VariantTargeting sdkRuntimeVariantTargeting(
+      SdkVersion sdkVersion, ImmutableSet<SdkVersion> alternativeSdkVersions) {
+    return VariantTargeting.newBuilder()
+        .setSdkRuntimeTargeting(SdkRuntimeTargeting.newBuilder().setRequiresSdkRuntime(true))
+        .setSdkVersionTargeting(
+            SdkVersionTargeting.newBuilder()
+                .addValue(sdkVersion)
+                .addAllAlternatives(alternativeSdkVersions))
+        .build();
+  }
+
   public static Optional<Integer> getScreenDensityDpi(
       ScreenDensityTargeting screenDensityTargeting) {
     if (screenDensityTargeting.getValueList().isEmpty()) {
@@ -148,10 +257,7 @@ public final class TargetingProtoUtils {
     ScreenDensity densityTargeting =
         screenDensityTargeting.getValueList().stream()
             // For now we only support one value in ScreenDensityTargeting.
-            .collect(MoreCollectors.onlyElement());
-    return Optional.of(
-        densityTargeting.getDensityOneofCase().equals(DENSITY_ALIAS)
-            ? DENSITY_ALIAS_TO_DPI_MAP.get(densityTargeting.getDensityAlias())
-            : densityTargeting.getDensityDpi());
+            .collect(onlyElement());
+    return Optional.of(ResourcesUtils.convertToDpi(densityTargeting));
   }
 }

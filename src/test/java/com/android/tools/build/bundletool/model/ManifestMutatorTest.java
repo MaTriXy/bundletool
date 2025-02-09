@@ -18,7 +18,7 @@ package com.android.tools.build.bundletool.model;
 
 import static com.android.tools.build.bundletool.model.ManifestMutator.withExtractNativeLibs;
 import static com.android.tools.build.bundletool.testing.ManifestProtoUtils.androidManifest;
-import static com.google.common.truth.Truth8.assertThat;
+import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableList;
 import org.junit.Test;
@@ -32,6 +32,7 @@ public class ManifestMutatorTest {
   @Test
   public void setExtractNativeLibsValue() throws Exception {
     AndroidManifest manifest = AndroidManifest.create(androidManifest("com.test.app"));
+    assertThat(manifest.getExtractNativeLibsValue()).isEmpty();
 
     AndroidManifest editedManifest =
         manifest.applyMutators(ImmutableList.of(withExtractNativeLibs(false)));

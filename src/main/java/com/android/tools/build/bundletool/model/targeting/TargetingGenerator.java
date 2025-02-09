@@ -17,6 +17,7 @@
 package com.android.tools.build.bundletool.model.targeting;
 
 import static com.android.tools.build.bundletool.model.BundleModule.ABI_SPLITTER;
+import static com.android.tools.build.bundletool.model.targeting.TargetingUtils.getAlternativeTargeting;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -33,10 +34,12 @@ import com.android.bundle.Targeting.AssetsDirectoryTargeting;
 import com.android.bundle.Targeting.MultiAbi;
 import com.android.bundle.Targeting.MultiAbiTargeting;
 import com.android.bundle.Targeting.NativeDirectoryTargeting;
+import com.android.bundle.Targeting.Sanitizer;
+import com.android.bundle.Targeting.Sanitizer.SanitizerAlias;
 import com.android.tools.build.bundletool.model.AbiName;
+import com.android.tools.build.bundletool.model.BundleModule;
 import com.android.tools.build.bundletool.model.ZipPath;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
-import com.android.tools.build.bundletool.model.utils.TargetingProtoUtils;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
 import com.android.tools.build.bundletool.model.utils.files.FileUtils;
 import com.google.common.base.Ascii;
 import com.google.common.collect.HashMultimap;
@@ -44,12 +47,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * From a list of raw directory names produces targeting.
@@ -85,7 +86,6 @@ public class TargetingGenerator {
       targetingByBaseName.put(
           targetedDirectory.getPathBaseName(), targetedDirectory.getLastSegment().getTargeting());
     }
-    validateDimensions(targetingByBaseName);
 
     // Pass 2: Building the directory targeting proto using the targetingByBaseName map.
 
@@ -114,17 +114,10 @@ public class TargetingGenerator {
           continue;
         }
         targeting.mergeFrom(
-            // Remove oneself from the alternatives and merge them together.
-            Sets.difference(
-                    targetingByBaseName.get(targetedDirectory.getSubPathBaseName(i)),
-                    ImmutableSet.of(segment.getTargeting()))
-                .stream()
-                .map(TargetingProtoUtils::toAlternativeTargeting)
-                .reduce(
-                    AssetsDirectoryTargeting.newBuilder(),
-                    (builder, targetingValue) -> builder.mergeFrom(targetingValue),
-                    (builderA, builderB) -> builderA.mergeFrom(builderB.build()))
-                .build());
+            getAlternativeTargeting(
+                segment.getTargeting(),
+                ImmutableList.copyOf(
+                    targetingByBaseName.get(targetedDirectory.getSubPathBaseName(i)))));
       }
       assetsBuilder.addDirectory(
           TargetedAssetsDirectory.newBuilder()
@@ -133,36 +126,6 @@ public class TargetingGenerator {
     }
 
     return assetsBuilder.build();
-  }
-
-  /** Finds targeting dimension mismatches amongst multi-map entries. */
-  private void validateDimensions(Multimap<String, AssetsDirectoryTargeting> targetingMultimap) {
-    for (String baseName : targetingMultimap.keySet()) {
-      ImmutableList<TargetingDimension> distinctDimensions =
-          targetingMultimap
-              .get(baseName)
-              .stream()
-              .map(TargetingUtils::getTargetingDimensions)
-              .flatMap(Collection::stream)
-              .distinct()
-              .collect(toImmutableList());
-      if (distinctDimensions.size() > 1) {
-        throw ValidationException.builder()
-            .withMessage(
-                "Expected at most one dimension type used for targeting of '%s'. "
-                    + "However, the following dimensions were used: %s.",
-                baseName, joinDimensions(distinctDimensions))
-            .build();
-      }
-    }
-  }
-
-  private static String joinDimensions(ImmutableList<TargetingDimension> dimensions) {
-    return dimensions
-        .stream()
-        .map(dimension -> String.format("'%s'", dimension))
-        .sorted()
-        .collect(Collectors.joining(", "));
   }
 
   /**
@@ -178,14 +141,19 @@ public class TargetingGenerator {
       checkRootDirectoryName(LIB_DIR, directory);
 
       // Split the directory under lib/ into tokens.
-      String abiName = directory.substring(LIB_DIR.length());
+      String subDirName = directory.substring(LIB_DIR.length());
 
-      Abi abi = checkAbiName(abiName, directory);
+      Abi abi = checkAbiName(subDirName, directory);
+      NativeDirectoryTargeting.Builder nativeBuilder =
+          NativeDirectoryTargeting.newBuilder().setAbi(abi);
+      if (subDirName.equals("arm64-v8a-hwasan")) {
+        nativeBuilder.setSanitizer(Sanitizer.newBuilder().setAlias(SanitizerAlias.HWADDRESS));
+      }
 
       nativeLibraries.addDirectory(
           TargetedNativeDirectory.newBuilder()
               .setPath(directory)
-              .setTargeting(NativeDirectoryTargeting.newBuilder().setAbi(abi))
+              .setTargeting(nativeBuilder)
               .build());
     }
 
@@ -196,9 +164,11 @@ public class TargetingGenerator {
    * Generates APEX targeting based on the names of the APEX image files.
    *
    * @param apexImageFiles names of all files under apex/, including the "apex/" prefix.
+   * @param hasBuildInfo if true then each APEX image file has a corresponding build info file.
    * @return Targeting for all APEX image files.
    */
-  public ApexImages generateTargetingForApexImages(Collection<ZipPath> apexImageFiles) {
+  public ApexImages generateTargetingForApexImages(
+      Collection<ZipPath> apexImageFiles, boolean hasBuildInfo) {
     ImmutableMap<ZipPath, MultiAbi> targetingByPath =
         Maps.toMap(apexImageFiles, path -> buildMultiAbi(path.getFileName().toString()));
 
@@ -209,6 +179,13 @@ public class TargetingGenerator {
             apexImages.addImage(
                 TargetedApexImage.newBuilder()
                     .setPath(imagePath.toString())
+                    .setBuildInfoPath(
+                        hasBuildInfo
+                            ? imagePath
+                                .toString()
+                                .replace(
+                                    BundleModule.APEX_IMAGE_SUFFIX, BundleModule.BUILD_INFO_SUFFIX)
+                            : "")
                     .setTargeting(buildApexTargetingWithAlternatives(targeting, allTargeting))));
     return apexImages.build();
   }
@@ -248,19 +225,19 @@ public class TargetingGenerator {
   }
 
   private static Abi checkAbiName(String token, String forFileOrDirectory) {
-    Optional<AbiName> abiName = AbiName.fromPlatformName(token);
+    Optional<AbiName> abiName = AbiName.fromLibSubDirName(token);
     if (!abiName.isPresent()) {
-      Optional<AbiName> abiNameLowerCase = AbiName.fromPlatformName(token.toLowerCase());
+      Optional<AbiName> abiNameLowerCase = AbiName.fromLibSubDirName(token.toLowerCase());
       if (abiNameLowerCase.isPresent()) {
-        throw ValidationException.builder()
-            .withMessage(
+        throw InvalidBundleException.builder()
+            .withUserMessage(
                 "Expecting ABI name in file or directory '%s', but found '%s' "
                     + "which is not recognized. Did you mean '%s'?",
                 forFileOrDirectory, token, Ascii.toLowerCase(token))
             .build();
       }
-      throw ValidationException.builder()
-          .withMessage(
+      throw InvalidBundleException.builder()
+          .withUserMessage(
               "Expecting ABI name in file or directory '%s', but found '%s' "
                   + "which is not recognized.",
               forFileOrDirectory, token)

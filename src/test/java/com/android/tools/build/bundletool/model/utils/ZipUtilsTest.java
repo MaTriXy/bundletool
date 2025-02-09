@@ -18,13 +18,16 @@ package com.android.tools.build.bundletool.model.utils;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.stream.Collectors.toList;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.tools.build.bundletool.io.ZipBuilder;
 import com.android.tools.build.bundletool.model.ZipPath;
 import com.google.common.collect.ImmutableList;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.junit.Rule;
 import org.junit.Test;
@@ -52,15 +55,52 @@ public class ZipUtilsTest {
     try (ZipFile zipFile = createZipFileWithFiles("a", "b", "c")) {
       ImmutableList<ZipPath> files =
           ZipUtils.allFileEntriesPaths(zipFile).collect(toImmutableList());
-      assertThat(files.stream().map(Path::toString).collect(toList()))
+      assertThat(files.stream().map(ZipPath::toString).collect(toList()))
           .containsExactly("a", "b", "c");
+    }
+  }
+
+  @Test
+  public void convertBundleToModulePath_removesModuleDirectory() {
+    ZipPath path = ZipUtils.convertBundleToModulePath(ZipPath.create("/module1/resource1"));
+    assertThat(path.toString()).isEqualTo("resource1");
+  }
+
+  @Test
+  public void convertBundleToModulePath_pathPreservesAllDirectories() {
+    ZipPath path = ZipPath.create("/resource1");
+    assertThat(path.toString()).isEqualTo("resource1");
+  }
+
+  @Test
+  public void convertBundleToModulePath_pathTooShort_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ZipUtils.convertBundleToModulePath(ZipPath.create("AndroidManifest.xml")));
+  }
+
+  @Test
+  public void getPath_deepResourcePath() {
+    ZipPath path =
+        ZipUtils.convertBundleToModulePath(ZipPath.create("/module2/assets/en-gb/text.txt"));
+    assertThat(path.toString()).isEqualTo("assets/en-gb/text.txt");
+  }
+
+  @Test
+  public void asByteSource() throws Exception {
+    try (ZipFile zipFile = createZipFileWithFiles("entry_1", "entry_2", "entry_3")) {
+      for (ZipEntry zipEntry : ZipUtils.allFileEntries(zipFile).collect(toImmutableList())) {
+        byte[] actualBytes = ZipUtils.asByteSource(zipFile, zipEntry).read();
+        byte[] expectedBytes = zipEntry.getName().getBytes(UTF_8);
+        assertThat(actualBytes).isEqualTo(expectedBytes);
+      }
     }
   }
 
   private ZipFile createZipFileWithFiles(String... fileNames) throws IOException {
     ZipBuilder zipBuilder = new ZipBuilder();
     for (String fileName : fileNames) {
-      zipBuilder.addFileWithContent(ZipPath.create(fileName), new byte[1]);
+      zipBuilder.addFileWithContent(ZipPath.create(fileName), fileName.getBytes(UTF_8));
     }
     Path zipPath = zipBuilder.writeTo(tmp.getRoot().toPath().resolve("output.jar"));
     return new ZipFile(zipPath.toFile());

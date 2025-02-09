@@ -16,14 +16,11 @@
 
 package com.android.tools.build.bundletool.model;
 
-import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.sdkVersionFrom;
-import static com.android.tools.build.bundletool.model.utils.TargetingProtoUtils.sdkVersionTargeting;
-
 import com.android.bundle.Targeting.DeviceFeature;
 import com.android.bundle.Targeting.DeviceFeatureTargeting;
 import com.android.bundle.Targeting.ModuleTargeting;
-import com.android.bundle.Targeting.UserCountriesTargeting;
-import com.android.tools.build.bundletool.model.exceptions.ValidationException;
+import com.android.tools.build.bundletool.model.exceptions.InvalidBundleException;
+import com.android.tools.build.bundletool.model.utils.TargetingProtoUtils;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.Immutable;
@@ -41,7 +38,11 @@ public abstract class ModuleConditions {
 
   public abstract Optional<Integer> getMinSdkVersion();
 
+  public abstract Optional<Integer> getMaxSdkVersion();
+
   public abstract Optional<UserCountriesCondition> getUserCountriesCondition();
+
+  public abstract Optional<DeviceGroupsCondition> getDeviceGroupsCondition();
 
   public boolean isEmpty() {
     return toTargeting().equals(ModuleTargeting.getDefaultInstance());
@@ -62,18 +63,33 @@ public abstract class ModuleConditions {
           DeviceFeatureTargeting.newBuilder().setRequiredFeature(feature));
     }
 
-    if (getMinSdkVersion().isPresent()) {
-      moduleTargeting.setSdkVersionTargeting(
-          sdkVersionTargeting(sdkVersionFrom(getMinSdkVersion().get())));
-    }
+    // Effective min SDK targeting in this case is:
+    //   1) provided min SDK, if available
+    //   2) 1, if min SDK is not provided, but max SDK is used
+    //   3) nothing, if neither min SDK nor max SDK are used
+    Optional<Integer> effectiveMinSdk =
+        getMinSdkVersion().isPresent() ? getMinSdkVersion() : getMaxSdkVersion().map(unused -> 1);
+
+    effectiveMinSdk
+        .map(TargetingProtoUtils::sdkVersionFrom)
+        .map(TargetingProtoUtils::sdkVersionTargeting)
+        .ifPresent(moduleTargeting::setSdkVersionTargeting);
+
+    // Sentinel alternatives are not inclusive, hence +1.
+    getMaxSdkVersion()
+        .map(sdk -> sdk + 1)
+        .map(TargetingProtoUtils::sdkVersionFrom)
+        .ifPresent(
+            maxSdkVersion ->
+                moduleTargeting.getSdkVersionTargetingBuilder().addAlternatives(maxSdkVersion));
 
     if (getUserCountriesCondition().isPresent()) {
       UserCountriesCondition condition = getUserCountriesCondition().get();
-      moduleTargeting.setUserCountriesTargeting(
-          UserCountriesTargeting.newBuilder()
-              .addAllCountryCodes(condition.getCountries())
-              .setExclude(condition.getExclude())
-              .build());
+      moduleTargeting.setUserCountriesTargeting(condition.toTargeting());
+    }
+
+    if (getDeviceGroupsCondition().isPresent()) {
+      moduleTargeting.setDeviceGroupTargeting(getDeviceGroupsCondition().get().toTargeting());
     }
 
     return moduleTargeting.build();
@@ -92,8 +108,12 @@ public abstract class ModuleConditions {
 
     public abstract Builder setMinSdkVersion(int minSdkVersion);
 
+    public abstract Builder setMaxSdkVersion(int maxSdkVersion);
+
     public abstract Builder setUserCountriesCondition(
         UserCountriesCondition userCountriesCondition);
+
+    public abstract Builder setDeviceGroupsCondition(DeviceGroupsCondition deviceGroupsCondition);
 
     protected abstract ModuleConditions autoBuild();
 
@@ -103,8 +123,8 @@ public abstract class ModuleConditions {
       Set<String> featureNames = new HashSet<>();
       for (DeviceFeatureCondition condition : moduleConditions.getDeviceFeatureConditions()) {
         if (!featureNames.add(condition.getFeatureName())) {
-          throw ValidationException.builder()
-              .withMessage(
+          throw InvalidBundleException.builder()
+              .withUserMessage(
                   "The device feature condition on '%s' is present more than once.",
                   condition.getFeatureName())
               .build();

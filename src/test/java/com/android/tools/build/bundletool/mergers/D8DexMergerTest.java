@@ -19,20 +19,13 @@ package com.android.tools.build.bundletool.mergers;
 import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_K_API_VERSION;
 import static com.android.tools.build.bundletool.model.utils.Versions.ANDROID_L_API_VERSION;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.truth.Truth.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.android.tools.build.bundletool.TestData;
 import com.android.tools.build.bundletool.model.exceptions.CommandExecutionException;
 import com.android.tools.build.bundletool.testing.FileUtils;
-import com.android.tools.r8.dex.ApplicationReader;
-import com.android.tools.r8.graph.DexApplication;
-import com.android.tools.r8.utils.AndroidApp;
-import com.android.tools.r8.utils.InternalOptions;
-import com.android.tools.r8.utils.Timing;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import java.io.File;
@@ -41,6 +34,10 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Optional;
+import org.jf.dexlib2.DexFileFactory;
+import org.jf.dexlib2.Opcodes;
+import org.jf.dexlib2.dexbacked.DexBackedClassDef;
+import org.jf.dexlib2.dexbacked.DexBackedDexFile;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -51,7 +48,7 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class D8DexMergerTest {
 
-  private static final Optional<Path> NO_MAIN_DEX_LIST = Optional.empty();
+  private static final Optional<Path> NO_FILE = Optional.empty();
 
   @Rule public TemporaryFolder tmp = new TemporaryFolder();
   private Path tmpDir;
@@ -76,7 +73,8 @@ public class D8DexMergerTest {
                     .merge(
                         ImmutableList.of(dexFile),
                         nonExistentDir,
-                        NO_MAIN_DEX_LIST,
+                        /* mainDexListFile= */ NO_FILE,
+                        /* proguardMap= */ NO_FILE,
                         /* isDebuggable= */ false,
                         /* minSdkVersion= */ ANDROID_K_API_VERSION));
 
@@ -96,7 +94,8 @@ public class D8DexMergerTest {
                     .merge(
                         ImmutableList.of(dexFile),
                         outputDir,
-                        NO_MAIN_DEX_LIST,
+                        /* mainDexListFile= */ NO_FILE,
+                        /* proguardMap= */ NO_FILE,
                         /* isDebuggable= */ false,
                         /* minSdkVersion= */ ANDROID_K_API_VERSION));
 
@@ -115,7 +114,8 @@ public class D8DexMergerTest {
                     .merge(
                         ImmutableList.of(nonExistentDex),
                         outputDir,
-                        NO_MAIN_DEX_LIST,
+                        /* mainDexListFile= */ NO_FILE,
+                        /* proguardMap= */ NO_FILE,
                         /* isDebuggable= */ false,
                         /* minSdkVersion= */ ANDROID_K_API_VERSION));
 
@@ -132,7 +132,8 @@ public class D8DexMergerTest {
             .merge(
                 ImmutableList.of(dexFile1, dexFile2),
                 outputDir,
-                NO_MAIN_DEX_LIST,
+                /* mainDexListFile= */ NO_FILE,
+                /* proguardMap= */ NO_FILE,
                 /* isDebuggable= */ false,
                 /* minSdkVersion= */ ANDROID_K_API_VERSION);
 
@@ -150,7 +151,8 @@ public class D8DexMergerTest {
             .merge(
                 ImmutableList.of(dexFile1, dexFile2),
                 outputDir,
-                NO_MAIN_DEX_LIST,
+                /* mainDexListFile= */ NO_FILE,
+                /* proguardMap= */ NO_FILE,
                 /* isDebuggable= */ false,
                 /* minSdkVersion= */ ANDROID_K_API_VERSION);
 
@@ -173,7 +175,8 @@ public class D8DexMergerTest {
                     .merge(
                         ImmutableList.of(dexFile1, dexFile2),
                         outputDir,
-                        NO_MAIN_DEX_LIST,
+                        /* mainDexListFile= */ NO_FILE,
+                        /* proguardMap= */ NO_FILE,
                         /* isDebuggable= */ false,
                         /* minSdkVersion= */ ANDROID_K_API_VERSION));
 
@@ -191,7 +194,8 @@ public class D8DexMergerTest {
             .merge(
                 ImmutableList.of(dexFile1, dexFile2),
                 outputDir,
-                NO_MAIN_DEX_LIST,
+                /* mainDexListFile= */ NO_FILE,
+                /* proguardMap= */ NO_FILE,
                 /* isDebuggable= */ false,
                 /* minSdkVersion= */ ANDROID_L_API_VERSION);
 
@@ -217,9 +221,123 @@ public class D8DexMergerTest {
                 ImmutableList.of(dexFile1, dexFile2),
                 outputDir,
                 mainDexListFile,
+                /* proguardMap= */ NO_FILE,
                 /* isDebuggable= */ false,
                 /* minSdkVersion= */ ANDROID_K_API_VERSION);
 
+    assertThat(mergedDexFiles.size()).isAtLeast(2);
+    assertThat(listClassesInDexFiles(mergedDexFiles))
+        .isEqualTo(listClassesInDexFiles(dexFile1, dexFile2));
+  }
+
+  @Test
+  public void mergeCoreDesugaringLibrary_ok() throws Exception {
+    // Two application dex files together with code desugaring dex.
+    Path dexFile1 = writeTestDataToFile("testdata/dex/classes.dex");
+    Path dexFile2 = writeTestDataToFile("testdata/dex/classes-other.dex");
+    Path dexFile3 = writeTestDataToFile("testdata/dex/classes-emulated-coredesugar.dex");
+
+    ImmutableList<Path> mergedDexFiles =
+        new D8DexMerger()
+            .merge(
+                ImmutableList.of(dexFile1, dexFile2, dexFile3),
+                outputDir,
+                /* mainDexListFile= */ Optional.empty(),
+                /* proguardMap= */ NO_FILE,
+                /* isDebuggable= */ false,
+                /* minSdkVersion= */ ANDROID_K_API_VERSION);
+    ImmutableList<String> mergedDexFilenames =
+        mergedDexFiles.stream().map(dex -> dex.getFileName().toString()).collect(toImmutableList());
+
+    assertThat(mergedDexFiles.size()).isAtLeast(2);
+    assertThat(mergedDexFilenames).containsExactly("classes.dex", "classes2.dex");
+    assertThat(listClassesInDexFiles(mergedDexFiles.get(0)))
+        .isEqualTo(listClassesInDexFiles(dexFile1, dexFile2));
+    // Core desugaring dex must not be merged with application dex.
+    assertThat(Files.readAllBytes(mergedDexFiles.get(1))).isEqualTo(Files.readAllBytes(dexFile3));
+  }
+
+  @Test
+  public void mergeCoreDesugaringLibrary_ok_with_java() throws Exception {
+    // Two application dex files together with code desugaring dex.
+    Path dexFile1 = writeTestDataToFile("testdata/dex/classes.dex");
+    Path dexFile2 = writeTestDataToFile("testdata/dex/classes-other.dex");
+    Path dexFile3 = writeTestDataToFile("testdata/dex/classes-coredesugar-with-java-package.dex");
+
+    ImmutableList<Path> mergedDexFiles =
+        new D8DexMerger()
+            .merge(
+                ImmutableList.of(dexFile1, dexFile2, dexFile3),
+                outputDir,
+                /* mainDexListFile= */ Optional.empty(),
+                /* proguardMap= */ NO_FILE,
+                /* isDebuggable= */ false,
+                /* minSdkVersion= */ ANDROID_K_API_VERSION);
+    ImmutableList<String> mergedDexFilenames =
+        mergedDexFiles.stream().map(dex -> dex.getFileName().toString()).collect(toImmutableList());
+
+    assertThat(mergedDexFiles.size()).isAtLeast(2);
+    assertThat(mergedDexFilenames).containsExactly("classes.dex", "classes2.dex");
+    assertThat(listClassesInDexFiles(mergedDexFiles.get(0)))
+        .isEqualTo(listClassesInDexFiles(dexFile1, dexFile2));
+    // Core desugaring dex must not be merged with application dex.
+    assertThat(Files.readAllBytes(mergedDexFiles.get(1))).isEqualTo(Files.readAllBytes(dexFile3));
+  }
+
+  @Test
+  public void bogusMapFileWorks() throws Exception {
+    // The two input dex files cannot fit into a single dex file.
+    Path dexFile1 = writeTestDataToFile("testdata/dex/classes-large.dex");
+    Path dexFile2 = writeTestDataToFile("testdata/dex/classes-large2.dex");
+
+    Optional<Path> bogusMapFile =
+        Optional.of(FileUtils.createFileWithLines(tmp, "NOT_A_VALID::MAPPING->::file->x"));
+
+    ImmutableList<Path> mergedDexFiles =
+        new D8DexMerger()
+            .merge(
+                ImmutableList.of(dexFile1, dexFile2),
+                outputDir,
+                /* mainDexListFile= */ NO_FILE,
+                /* proguardMap= */ bogusMapFile,
+                /* isDebuggable= */ false,
+                /* minSdkVersion= */ ANDROID_L_API_VERSION);
+    assertThat(mergedDexFiles.size()).isAtLeast(2);
+    assertThat(listClassesInDexFiles(mergedDexFiles))
+        .isEqualTo(listClassesInDexFiles(dexFile1, dexFile2));
+  }
+
+  @Test
+  public void mapFileArgument() throws Exception {
+    // The two input dex files cannot fit into a single dex file.
+    Path dexFile1 = writeTestDataToFile("testdata/dex/classes-large.dex");
+    Path dexFile2 = writeTestDataToFile("testdata/dex/classes-large2.dex");
+
+    // We are not testing actual distribution, just that a valid map
+    // file is passed through correctly.
+    Optional<Path> mapFile =
+        Optional.of(
+            FileUtils.createFileWithLines(
+                tmp,
+                "android.arch.core.executor.DefaultTaskExecutor -> c:",
+                "    android.os.Handler mMainHandler -> c",
+                "    java.lang.Object mLock -> a",
+                "    java.util.concurrent.ExecutorService mDiskIO -> b",
+                "    1:3:void <init>():31:33 -> <init>",
+                "    1:1:boolean isMainThread():58:58 -> a",
+                "    1:4:void postToMainThread(java.lang.Runnable):45:48 -> b",
+                "    5:5:void postToMainThread(java.lang.Runnable):50:50 -> b",
+                "    6:6:void postToMainThread(java.lang.Runnable):53:53 -> b"));
+
+    ImmutableList<Path> mergedDexFiles =
+        new D8DexMerger()
+            .merge(
+                ImmutableList.of(dexFile1, dexFile2),
+                outputDir,
+                /* mainDexListFile= */ NO_FILE,
+                /* proguardMap= */ mapFile,
+                /* isDebuggable= */ false,
+                /* minSdkVersion= */ ANDROID_L_API_VERSION);
     assertThat(mergedDexFiles.size()).isAtLeast(2);
     assertThat(listClassesInDexFiles(mergedDexFiles))
         .isEqualTo(listClassesInDexFiles(dexFile1, dexFile2));
@@ -237,28 +355,16 @@ public class D8DexMergerTest {
     return listClassesInDexFiles(Arrays.asList(dexFiles));
   }
 
-  /**
-   * This method is inspired by {@link com.android.tools.r8.PrintClassList} which has no Java API at
-   * the time of writing these tests.
-   */
-  private static ImmutableSet<String> listClassesInDexFiles(Collection<Path> dexFiles)
+  private static ImmutableSet<String> listClassesInDexFiles(Collection<Path> dexPaths)
       throws Exception {
-
-    DexApplication dexApplication =
-        new ApplicationReader(
-                AndroidApp.builder().addProgramFiles(dexFiles).build(),
-                new InternalOptions(),
-                new Timing("irrelevant"))
-            .read();
-
-    ImmutableSet<String> classes =
-        dexApplication
-            .classes()
-            .stream()
-            .map(clazz -> clazz.type.toString())
-            .collect(toImmutableSet());
-    checkState(!classes.isEmpty());
-    return classes;
+    ImmutableSet.Builder<String> classes = ImmutableSet.builder();
+    for (Path dexPath : dexPaths) {
+      DexBackedDexFile dexFile = DexFileFactory.loadDexFile(dexPath.toFile(), Opcodes.getDefault());
+      for (DexBackedClassDef clazz : dexFile.getClasses()) {
+        classes.add(clazz.getType());
+      }
+    }
+    return classes.build();
   }
 
   private static ImmutableList<Path> listDirectory(Path dir) {

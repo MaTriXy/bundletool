@@ -24,10 +24,9 @@ import static com.android.tools.build.bundletool.testing.TargetingUtils.apexImag
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apexImages;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkMultiAbiTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkMultiAbiTargetingFromAllTargeting;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.lPlusVariantTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedApexImage;
+import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedApexImageWithBuildInfo;
 import static com.android.tools.build.bundletool.testing.TestUtils.extractPaths;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 
@@ -59,7 +58,6 @@ public class AbiApexImagesSplitterTest {
 
     ModuleSplit x86Split = Iterables.getOnlyElement(splits.asList());
     assertThat(x86Split.getApkTargeting()).isEqualTo(apkMultiAbiTargeting(X86));
-    assertThat(x86Split.getVariantTargeting()).isEqualTo(lPlusVariantTargeting());
     assertThat(extractPaths(x86Split.getEntries())).containsExactly("apex/x86.img");
   }
 
@@ -82,8 +80,6 @@ public class AbiApexImagesSplitterTest {
         abiApexImagesSplitter.split(ModuleSplit.forApex(bundleModule));
 
     assertThat(splits).hasSize(2);
-    assertThat(splits.stream().map(ModuleSplit::getVariantTargeting).collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
     ApkTargeting x86Targeting = apkMultiAbiTargeting(X86, ImmutableSet.of(X86_64));
     ApkTargeting x64Targeting = apkMultiAbiTargeting(X86_64, ImmutableSet.of(X86));
     ImmutableMap<ApkTargeting, ModuleSplit> splitsByTargeting =
@@ -93,6 +89,40 @@ public class AbiApexImagesSplitterTest {
         .containsExactly("apex/x86.img");
     assertThat(extractPaths(splitsByTargeting.get(x64Targeting).getEntries()))
         .containsExactly("apex/x86_64.img");
+  }
+
+  @Test
+  public void splittingBySingleAbi_twoImageFilesWithBuildInfo() throws Exception {
+    ApexImages apexConfig =
+        apexImages(
+            targetedApexImageWithBuildInfo(
+                "apex/x86.img", "apex/x86.build_info.pb", apexImageTargeting("x86")),
+            targetedApexImageWithBuildInfo(
+                "apex/x86_64.img", "apex/x86_64.build_info.pb", apexImageTargeting("x86_64")));
+    BundleModule bundleModule =
+        new BundleModuleBuilder("testModule")
+            .addFile("apex/x86.img")
+            .addFile("apex/x86.build_info.pb")
+            .addFile("apex/x86_64.img")
+            .addFile("apex/x86_64.build_info.pb")
+            .setApexConfig(apexConfig)
+            .setManifest(androidManifest("com.test.app"))
+            .build();
+
+    AbiApexImagesSplitter abiApexImagesSplitter = new AbiApexImagesSplitter();
+    ImmutableCollection<ModuleSplit> splits =
+        abiApexImagesSplitter.split(ModuleSplit.forApex(bundleModule));
+
+    assertThat(splits).hasSize(2);
+    ApkTargeting x86Targeting = apkMultiAbiTargeting(X86, ImmutableSet.of(X86_64));
+    ApkTargeting x64Targeting = apkMultiAbiTargeting(X86_64, ImmutableSet.of(X86));
+    ImmutableMap<ApkTargeting, ModuleSplit> splitsByTargeting =
+        Maps.uniqueIndex(splits, ModuleSplit::getApkTargeting);
+    assertThat(splitsByTargeting.keySet()).containsExactly(x86Targeting, x64Targeting);
+    assertThat(extractPaths(splitsByTargeting.get(x86Targeting).getEntries()))
+        .containsExactly("apex/x86.img", "apex/x86.build_info.pb");
+    assertThat(extractPaths(splitsByTargeting.get(x64Targeting).getEntries()))
+        .containsExactly("apex/x86_64.img", "apex/x86_64.build_info.pb");
   }
 
   @Test
@@ -123,16 +153,14 @@ public class AbiApexImagesSplitterTest {
         abiApexImagesSplitter.split(ModuleSplit.forApex(bundleModule));
 
     assertThat(splits).hasSize(6);
-    assertThat(splits.stream().map(ModuleSplit::getVariantTargeting).collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
-    ImmutableSet<AbiAlias> x64X86Set = ImmutableSet.of(X86_64, X86);
-    ImmutableSet<AbiAlias> x64ArmSet = ImmutableSet.of(X86_64, ARMEABI_V7A);
+    ImmutableSet<AbiAlias> x64X86Set = ImmutableSet.of(X86, X86_64);
+    ImmutableSet<AbiAlias> x64ArmSet = ImmutableSet.of(ARMEABI_V7A, X86_64);
     ImmutableSet<AbiAlias> x64Set = ImmutableSet.of(X86_64);
-    ImmutableSet<AbiAlias> x86ArmSet = ImmutableSet.of(X86, ARMEABI_V7A);
+    ImmutableSet<AbiAlias> x86ArmSet = ImmutableSet.of(ARMEABI_V7A, X86);
     ImmutableSet<AbiAlias> x86Set = ImmutableSet.of(X86);
     ImmutableSet<AbiAlias> armSet = ImmutableSet.of(ARMEABI_V7A);
     ImmutableSet<ImmutableSet<AbiAlias>> allTargeting =
-        ImmutableSet.of(x64X86Set, x64ArmSet, x64Set, x86ArmSet, x86Set, armSet);
+        ImmutableSet.of(armSet, x86ArmSet, x64ArmSet, x86Set, x64X86Set, x64Set);
     ApkTargeting x64X86Targeting = apkMultiAbiTargetingFromAllTargeting(x64X86Set, allTargeting);
     ApkTargeting x64ArmTargeting = apkMultiAbiTargetingFromAllTargeting(x64ArmSet, allTargeting);
     ApkTargeting a64Targeting = apkMultiAbiTargetingFromAllTargeting(x64Set, allTargeting);

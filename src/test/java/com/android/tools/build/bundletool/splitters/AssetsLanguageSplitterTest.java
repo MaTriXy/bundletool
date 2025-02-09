@@ -24,14 +24,11 @@ import static com.android.tools.build.bundletool.testing.TargetingUtils.apkAlter
 import static com.android.tools.build.bundletool.testing.TargetingUtils.apkLanguageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.assets;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.assetsDirectoryTargeting;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.getSplitsWithDefaultTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.getSplitsWithTargetingEqualTo;
-import static com.android.tools.build.bundletool.testing.TargetingUtils.lPlusVariantTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.languageTargeting;
 import static com.android.tools.build.bundletool.testing.TargetingUtils.targetedAssetsDirectory;
 import static com.android.tools.build.bundletool.testing.TestUtils.extractPaths;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.extensions.proto.ProtoTruth.assertThat;
 
@@ -52,7 +49,7 @@ import org.junit.runners.JUnit4;
 public class AssetsLanguageSplitterTest {
 
   @Test
-  public void singleSplit() throws Exception {
+  public void singleAndEmptyDefaultSplit() throws Exception {
     BundleModule testModule =
         new BundleModuleBuilder("testModule")
             .addFile("assets/i18n#lang_jp/strings.pak")
@@ -66,10 +63,10 @@ public class AssetsLanguageSplitterTest {
 
     ModuleSplit baseSplit = ModuleSplit.forAssets(testModule);
     Collection<ModuleSplit> assetsSplits = LanguageAssetsSplitter.create().split(baseSplit);
-    assertThat(assetsSplits).hasSize(1);
+    assertThat(assetsSplits).hasSize(2);
     ModuleSplit split = assetsSplits.iterator().next();
+    verifySplitFor(assetsSplits, ApkTargeting.getDefaultInstance());
     assertThat(split.getApkTargeting()).isEqualTo(apkLanguageTargeting(languageTargeting("jp")));
-    assertThat(split.getVariantTargeting()).isEqualTo(lPlusVariantTargeting());
     assertThat(extractPaths(split.getEntries()))
         .containsExactly("assets/i18n#lang_jp/strings.pak", "assets/i18n#lang_jp/strings2.pak");
   }
@@ -93,13 +90,6 @@ public class AssetsLanguageSplitterTest {
     ModuleSplit baseSplit = ModuleSplit.forAssets(testModule);
     Collection<ModuleSplit> assetsSplits = LanguageAssetsSplitter.create().split(baseSplit);
     assertThat(assetsSplits).hasSize(2);
-    assertThat(
-            assetsSplits
-                .stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
     verifySplitFor(
         assetsSplits,
         apkLanguageTargeting("jp"),
@@ -127,15 +117,8 @@ public class AssetsLanguageSplitterTest {
 
     ModuleSplit baseSplit = ModuleSplit.forAssets(testModule);
     Collection<ModuleSplit> assetsSplits = LanguageAssetsSplitter.create().split(baseSplit);
-    assertThat(assetsSplits).hasSize(2);
-    assertThat(
-            assetsSplits
-                .stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
-    assertThat(getSplitsWithDefaultTargeting(assetsSplits)).isEmpty();
+    assertThat(assetsSplits).hasSize(3);
+    verifySplitFor(assetsSplits, ApkTargeting.getDefaultInstance());
     verifySplitFor(
         assetsSplits,
         apkLanguageTargeting("jp"),
@@ -175,14 +158,8 @@ public class AssetsLanguageSplitterTest {
 
     ModuleSplit baseSplit = ModuleSplit.forAssets(testModule);
     Collection<ModuleSplit> assetsSplits = LanguageAssetsSplitter.create().split(baseSplit);
-    assertThat(assetsSplits).hasSize(4);
-    assertThat(
-            assetsSplits
-                .stream()
-                .map(ModuleSplit::getVariantTargeting)
-                .distinct()
-                .collect(toImmutableSet()))
-        .containsExactly(lPlusVariantTargeting());
+    assertThat(assetsSplits).hasSize(5);
+    verifySplitFor(assetsSplits, ApkTargeting.getDefaultInstance());
     verifySplitFor(
         assetsSplits,
         apkLanguageTargeting("jp"),
@@ -243,7 +220,7 @@ public class AssetsLanguageSplitterTest {
     for (ModuleSplit configSplit : configSplits) {
       assertThat(
               compareManifestMutators(
-                  configSplit.getMasterManifestMutators(), withSplitsRequired(true)))
+                  configSplit.getMasterManifestMutators(), withSplitsRequired(/* value= */ true)))
           .isTrue();
     }
   }

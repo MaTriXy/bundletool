@@ -17,7 +17,7 @@
 package com.android.tools.build.bundletool.model.utils;
 
 import static com.android.bundle.Targeting.Abi.AbiAlias.X86;
-import static com.android.tools.build.bundletool.model.utils.ApkSizeUtils.getCompressedSizeByApkPaths;
+import static com.android.tools.build.bundletool.model.utils.ApkSizeUtils.getVariantCompressedSizeByApkPaths;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createApkDescription;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createApksArchiveFile;
 import static com.android.tools.build.bundletool.testing.ApksArchiveHelpers.createMasterApkDescription;
@@ -49,7 +49,7 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class ApkSizeUtilsTest {
 
-  private static final byte[] DUMMY_BYTES = new byte[100];
+  private static final byte[] TEST_BYTES = new byte[100];
   @Rule public final TemporaryFolder tmp = new TemporaryFolder();
   private Path tmpDir;
 
@@ -74,7 +74,7 @@ public class ApkSizeUtilsTest {
             tmpDir.resolve("bundle.apks"));
 
     ImmutableMap<String, Long> sizeByApkPaths =
-        getCompressedSizeByApkPaths(variants, apksArchiveFile);
+        getVariantCompressedSizeByApkPaths(variants, apksArchiveFile);
     assertThat(sizeByApkPaths.keySet()).containsExactly("apk_one.apk");
 
     assertThat(sizeByApkPaths.get("apk_one.apk")).isAtLeast(1L);
@@ -105,7 +105,7 @@ public class ApkSizeUtilsTest {
             tmpDir.resolve("bundle.apks"));
 
     ImmutableMap<String, Long> sizeByApkPaths =
-        getCompressedSizeByApkPaths(variants, apksArchiveFile);
+        getVariantCompressedSizeByApkPaths(variants, apksArchiveFile);
     assertThat(sizeByApkPaths.keySet())
         .containsExactly("base.apk", "base-x86.apk", "feature.apk", "feature-x86.apk");
 
@@ -136,7 +136,7 @@ public class ApkSizeUtilsTest {
             tmpDir.resolve("bundle.apks"));
 
     ImmutableMap<String, Long> sizeByApkPaths =
-        getCompressedSizeByApkPaths(variants, apksArchiveFile);
+        getVariantCompressedSizeByApkPaths(variants, apksArchiveFile);
     assertThat(sizeByApkPaths.keySet()).containsExactly("apk_one.apk", "apk_two.apk");
 
     long apkOneSize = sizeByApkPaths.get("apk_one.apk");
@@ -161,17 +161,17 @@ public class ApkSizeUtilsTest {
                 apkTwo));
 
     ZipBuilder archiveBuilder = new ZipBuilder();
-    archiveBuilder.addFileWithContent(ZipPath.create(apkOne.toString()), DUMMY_BYTES);
+    archiveBuilder.addFileWithContent(ZipPath.create(apkOne.toString()), TEST_BYTES);
     archiveBuilder.addFileWithContent(
         ZipPath.create(apkTwo.toString()),
-        DUMMY_BYTES,
+        TEST_BYTES,
         EntryOption.UNCOMPRESSED); // APK stored uncompressed in the APKs zip.
     archiveBuilder.addFileWithProtoContent(
         ZipPath.create("toc.pb"), BuildApksResult.newBuilder().addAllVariant(variants).build());
     Path apksArchiveFile = archiveBuilder.writeTo(tmpDir.resolve("bundle.apks"));
 
     ImmutableMap<String, Long> sizeByApkPaths =
-        getCompressedSizeByApkPaths(variants, apksArchiveFile);
+        getVariantCompressedSizeByApkPaths(variants, apksArchiveFile);
     assertThat(sizeByApkPaths.keySet()).containsExactly("apk_one.apk", "apk_two.apk");
 
     long apkOneSize = sizeByApkPaths.get("apk_one.apk");
@@ -205,7 +205,7 @@ public class ApkSizeUtilsTest {
             tmpDir.resolve("bundle.apks"));
 
     ImmutableMap<String, Long> sizeByApkPaths =
-        getCompressedSizeByApkPaths(ImmutableList.of(lVariant), apksArchiveFile);
+        getVariantCompressedSizeByApkPaths(ImmutableList.of(lVariant), apksArchiveFile);
     assertThat(sizeByApkPaths.keySet()).containsExactly("apk_one.apk");
 
     assertThat(sizeByApkPaths.get("apk_one.apk")).isAtLeast(1L);

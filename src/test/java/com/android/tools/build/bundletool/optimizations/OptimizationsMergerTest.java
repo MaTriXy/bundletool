@@ -22,6 +22,8 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.android.bundle.Config.SplitDimension;
+import com.android.bundle.Config.UncompressDexFiles.UncompressedDexTargetSdk;
+import com.android.bundle.Config.UncompressNativeLibraries.PageAlignment;
 import com.android.tools.build.bundletool.model.OptimizationDimension;
 import com.android.tools.build.bundletool.model.version.Version;
 import com.android.tools.build.bundletool.testing.BundleConfigBuilder;
@@ -38,6 +40,9 @@ public class OptimizationsMergerTest {
   private static final Version BUNDLE_TOOL_VERSION = Version.of("0.2.0");
   private static final ImmutableSet<OptimizationDimension> DEFAULT_SPLIT_DIMENSIONS =
       ApkOptimizations.getDefaultOptimizationsForVersion(BUNDLE_TOOL_VERSION).getSplitDimensions();
+  private static final ImmutableSet<OptimizationDimension> DEFAULT_STANDALONE_DIMENSIONS =
+      ApkOptimizations.getDefaultOptimizationsForVersion(BUNDLE_TOOL_VERSION)
+          .getStandaloneDimensions();
 
   @Before
   public void setUp() {
@@ -54,6 +59,7 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
   }
 
   @Test
@@ -70,6 +76,7 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).containsExactly(SCREEN_DENSITY);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions()).containsExactly(SCREEN_DENSITY);
   }
 
   @Test
@@ -86,6 +93,7 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).containsExactly(SCREEN_DENSITY);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isTrue();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions()).containsExactly(SCREEN_DENSITY);
   }
 
   @Test
@@ -101,6 +109,46 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
     assertThat(apkOptimizations.getUncompressDexFiles()).isTrue();
+    assertThat(apkOptimizations.getUncompressedDexTargetSdk())
+        .isEqualTo(UncompressedDexTargetSdk.UNSPECIFIED);
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
+  }
+
+  @Test
+  public void mergeOptimizations_withUncompressDexFiles_withUncompressedDexTargetSdk() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .clearOptimizations()
+                    .setUncompressDexFiles(true)
+                    .setUncompressDexFilesForVariant(UncompressedDexTargetSdk.SDK_31)
+                    .build());
+
+    assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
+    assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
+    assertThat(apkOptimizations.getUncompressDexFiles()).isTrue();
+    assertThat(apkOptimizations.getUncompressedDexTargetSdk())
+        .isEqualTo(UncompressedDexTargetSdk.SDK_31);
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
+  }
+
+  @Test
+  public void mergeOptimizations_withUncompressDexFilesForSVariant() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .clearOptimizations()
+                    .setUncompressDexFilesForVariant(UncompressedDexTargetSdk.SDK_31)
+                    .build());
+
+    assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
+    assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
+    assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getUncompressedDexTargetSdk())
+        .isEqualTo(UncompressedDexTargetSdk.SDK_31);
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
   }
 
   @Test
@@ -117,6 +165,8 @@ public class OptimizationsMergerTest {
         .isEqualTo(Sets.difference(DEFAULT_SPLIT_DIMENSIONS, ImmutableSet.of(ABI)));
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions())
+        .isEqualTo(Sets.difference(DEFAULT_STANDALONE_DIMENSIONS, ImmutableSet.of(ABI)));
   }
 
   @Test
@@ -132,6 +182,7 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
   }
 
   @Test
@@ -144,6 +195,7 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isTrue();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
   }
 
   @Test
@@ -160,6 +212,7 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isTrue();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
   }
 
   @Test
@@ -176,6 +229,126 @@ public class OptimizationsMergerTest {
     assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
     assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
     assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions()).isEqualTo(DEFAULT_STANDALONE_DIMENSIONS);
+  }
+
+  @Test
+  public void mergeOptimizations_bundleConfigAddsOneStandaloneDimension() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .clearOptimizations()
+                    .addStandaloneDimension(SplitDimension.Value.LANGUAGE)
+                    .build());
+
+    assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
+    assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
+    assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions())
+        .isEqualTo(Sets.union(DEFAULT_STANDALONE_DIMENSIONS, ImmutableSet.of(LANGUAGE)));
+  }
+
+  @Test
+  public void mergeOptimizations_bundleConfigRemovesOneStandaloneDimension() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .clearOptimizations()
+                    .addStandaloneDimension(SplitDimension.Value.ABI, /* negate= */ true)
+                    .build());
+
+    assertThat(apkOptimizations.getSplitDimensions()).isEqualTo(DEFAULT_SPLIT_DIMENSIONS);
+    assertThat(apkOptimizations.getUncompressNativeLibraries()).isFalse();
+    assertThat(apkOptimizations.getUncompressDexFiles()).isFalse();
+    assertThat(apkOptimizations.getStandaloneDimensions())
+        .isEqualTo(Sets.difference(DEFAULT_STANDALONE_DIMENSIONS, ImmutableSet.of(ABI)));
+  }
+
+  @Test
+  public void mergeOptimizations_pageAlignmentDefaultUnspecifiedBefore_1_17_0() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .setVersion("1.16.0")
+                    .clearOptimizations()
+                    .setPageAlignment(PageAlignment.PAGE_ALIGNMENT_UNSPECIFIED)
+                    .build());
+
+    assertThat(apkOptimizations.getPageAlignment())
+        .isEqualTo(PageAlignment.PAGE_ALIGNMENT_UNSPECIFIED);
+  }
+
+  @Test
+  public void mergeOptimizations_pageAlignmentDefault16KAt_1_17_0() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .setVersion("1.17.0")
+                    .clearOptimizations()
+                    .setPageAlignment(PageAlignment.PAGE_ALIGNMENT_UNSPECIFIED)
+                    .build());
+
+    assertThat(apkOptimizations.getPageAlignment()).isEqualTo(PageAlignment.PAGE_ALIGNMENT_16K);
+  }
+
+  @Test
+  public void mergeOptimizations_pageAlignmentDefault16KAfter_1_17_0() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .setVersion("1.18.0")
+                    .clearOptimizations()
+                    .setPageAlignment(PageAlignment.PAGE_ALIGNMENT_UNSPECIFIED)
+                    .build());
+
+    assertThat(apkOptimizations.getPageAlignment()).isEqualTo(PageAlignment.PAGE_ALIGNMENT_16K);
+  }
+
+  @Test
+  public void mergeOptimizations_pageAlignmentRespectsRequestedBefore_1_17_0() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .setVersion("1.16.0")
+                    .clearOptimizations()
+                    .setPageAlignment(PageAlignment.PAGE_ALIGNMENT_4K)
+                    .build());
+
+    assertThat(apkOptimizations.getPageAlignment()).isEqualTo(PageAlignment.PAGE_ALIGNMENT_4K);
+  }
+
+  @Test
+  public void mergeOptimizations_pageAlignmentRespectsRequestedAt_1_17_0() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .setVersion("1.17.0")
+                    .clearOptimizations()
+                    .setPageAlignment(PageAlignment.PAGE_ALIGNMENT_4K)
+                    .build());
+
+    assertThat(apkOptimizations.getPageAlignment()).isEqualTo(PageAlignment.PAGE_ALIGNMENT_4K);
+  }
+
+  @Test
+  public void mergeOptimizations_pageAlignmentRespectsRequestedAfter_1_17_0() {
+    ApkOptimizations apkOptimizations =
+        new OptimizationsMerger()
+            .mergeWithDefaults(
+                createBundleConfigBuilder()
+                    .setVersion("1.18.0")
+                    .clearOptimizations()
+                    .setPageAlignment(PageAlignment.PAGE_ALIGNMENT_4K)
+                    .build());
+
+    assertThat(apkOptimizations.getPageAlignment()).isEqualTo(PageAlignment.PAGE_ALIGNMENT_4K);
   }
 
   private static BundleConfigBuilder createBundleConfigBuilder() {

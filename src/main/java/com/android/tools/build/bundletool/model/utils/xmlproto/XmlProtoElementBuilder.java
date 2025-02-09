@@ -24,8 +24,10 @@ import com.android.aapt.Resources.XmlAttribute;
 import com.android.aapt.Resources.XmlElement;
 import com.android.aapt.Resources.XmlNamespace;
 import com.android.aapt.Resources.XmlNode;
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import java.util.List;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -37,7 +39,8 @@ public final class XmlProtoElementBuilder
         XmlElement.Builder,
         XmlProtoElementBuilder,
         XmlAttribute.Builder,
-        XmlProtoAttributeBuilder> {
+        XmlProtoAttributeBuilder>
+    implements ToXmlNode {
 
   private final XmlElement.Builder element;
 
@@ -61,6 +64,11 @@ public final class XmlProtoElementBuilder
   @Override
   public XmlElement.Builder getProto() {
     return element;
+  }
+
+  @Override
+  public XmlNode toXmlNode() {
+    return XmlNode.newBuilder().setElement(element.build()).build();
   }
 
   @Override
@@ -131,6 +139,25 @@ public final class XmlProtoElementBuilder
               element.addAttribute(attributeFactory.get());
               return new XmlProtoAttributeBuilder(
                   element.getAttributeBuilder(element.getAttributeCount() - 1));
+            });
+  }
+
+  public XmlProtoElementBuilder removeSourceDataRecursive() {
+    removeSourceDataRecursiveInternal(getProto());
+    return this;
+  }
+
+  private static void removeSourceDataRecursiveInternal(XmlElement.Builder builder) {
+    builder.getAttributeBuilderList().forEach(XmlAttribute.Builder::clearSource);
+    builder.getNamespaceDeclarationBuilderList().forEach(XmlNamespace.Builder::clearSource);
+    builder
+        .getChildBuilderList()
+        .forEach(
+            child -> {
+              child.clearSource();
+              if (child.hasElement()) {
+                removeSourceDataRecursiveInternal(child.getElementBuilder());
+              }
             });
   }
 
@@ -216,6 +243,37 @@ public final class XmlProtoElementBuilder
     if (getProtoChildrenList().size() != keptChildren.size()) {
       element.clearChild().addAllChild(keptChildren);
     }
+    return this;
+  }
+
+  public XmlProtoElementBuilder removeChildren() {
+    removeChildrenElementsIf(Predicates.alwaysTrue());
+    return this;
+  }
+
+  public XmlProtoElementBuilder addChildren(ImmutableList<? extends ToXmlNode> children) {
+    children.forEach(child -> element.addChild(child.toXmlNode()));
+    return this;
+  }
+
+  public XmlProtoElementBuilder clearAttribute() {
+    element.clearAttribute();
+    return this;
+  }
+
+  public XmlProtoElementBuilder addAllAttribute(ImmutableList<XmlProtoAttribute> attributes) {
+    attributes.forEach(attribute -> element.addAttribute(attribute.getProto()));
+    return this;
+  }
+
+  public XmlProtoElementBuilder modifyChildElements(
+      Function<XmlProtoNodeBuilder, XmlProtoNodeBuilder> mapper) {
+    ImmutableList<XmlNode> modifiedElements =
+        getChildren()
+            .map(mapper)
+            .map(builder -> builder.build().getProto())
+            .collect(toImmutableList());
+    element.clearChild().addAllChild(modifiedElements);
     return this;
   }
 }

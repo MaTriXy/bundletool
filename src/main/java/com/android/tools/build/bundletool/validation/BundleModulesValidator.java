@@ -16,20 +16,14 @@
 
 package com.android.tools.build.bundletool.validation;
 
-import static com.google.common.base.Predicates.not;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.android.bundle.Config.BundleConfig;
-import com.android.bundle.Config.Bundletool;
+import com.android.tools.build.bundletool.model.AppBundle;
 import com.android.tools.build.bundletool.model.BundleModule;
-import com.android.tools.build.bundletool.model.BundleModuleName;
-import com.android.tools.build.bundletool.model.ModuleZipEntry;
-import com.android.tools.build.bundletool.model.version.BundleToolVersion;
+import com.android.tools.build.bundletool.model.utils.BundleModuleParser;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
@@ -45,7 +39,7 @@ public class BundleModulesValidator {
   @VisibleForTesting
   static final ImmutableList<SubValidator> MODULE_FILE_SUB_VALIDATORS =
       // Keep order of common validators in sync with AppBundleValidator.
-      ImmutableList.of(new MandatoryFilesPresenceValidator());
+      ImmutableList.of(new MandatoryFilesPresenceValidator(AppBundle.NON_MODULE_DIRECTORIES));
 
   /** Validators run on the internal representation of bundle modules. */
   @VisibleForTesting
@@ -58,61 +52,34 @@ public class BundleModulesValidator {
           new AndroidManifestValidator(),
           // More specific file validations.
           new EntryClashValidator(),
+          new NestedTargetingValidator(),
           new AbiParityValidator(),
+          new TextureCompressionFormatParityValidator(),
+          new DeviceGroupParityValidator(),
+          new DeviceTierParityValidator(),
+          new CountrySetParityValidator(),
           new DexFilesValidator(),
           new ApexBundleValidator(),
+          new AssetBundleValidator(),
           // Other.
           new ModuleDependencyValidator(),
           new ModuleTitleValidator(),
           new ResourceTableValidator(),
           new AssetModuleFilesValidator());
 
-  private static final BundleConfig EMPTY_CONFIG_WITH_CURRENT_VERSION =
-      BundleConfig.newBuilder()
-          .setBundletool(
-              Bundletool.newBuilder().setVersion(BundleToolVersion.getCurrentVersion().toString()))
-          .build();
-
-  public ImmutableList<BundleModule> validate(ImmutableList<ZipFile> moduleZips) {
+  public ImmutableList<BundleModule> validate(
+      ImmutableList<ZipFile> moduleZips, BundleConfig bundleConfig) {
     for (ZipFile moduleZip : moduleZips) {
       new ValidatorRunner(MODULE_FILE_SUB_VALIDATORS).validateModuleZipFile(moduleZip);
     }
 
     ImmutableList<BundleModule> modules =
-        moduleZips.stream().map(this::toBundleModule).collect(toImmutableList());
+        moduleZips.stream()
+            .map(module -> BundleModuleParser.parseAppBundleModule(module, bundleConfig))
+            .collect(toImmutableList());
 
     new ValidatorRunner(MODULES_SUB_VALIDATORS).validateBundleModules(modules);
 
     return modules;
-  }
-
-  private BundleModule toBundleModule(ZipFile moduleZipFile) {
-    BundleModule bundleModule;
-    try {
-      bundleModule =
-          BundleModule.builder()
-              // Assigning a temporary name because the real one will be extracted from the
-              // manifest, but this requires the BundleModule to be built.
-              .setName(BundleModuleName.create("TEMPORARY_MODULE_NAME"))
-              .setBundleConfig(EMPTY_CONFIG_WITH_CURRENT_VERSION)
-              .addEntries(
-                  moduleZipFile.stream()
-                      .filter(not(ZipEntry::isDirectory))
-                      .map(zipEntry -> ModuleZipEntry.fromModuleZipEntry(zipEntry, moduleZipFile))
-                      .collect(toImmutableList()))
-              .build();
-    } catch (IOException e) {
-      throw new UncheckedIOException(
-          String.format("Error reading module zip file '%s'.", moduleZipFile.getName()), e);
-    }
-
-    BundleModuleName actualModuleName =
-        bundleModule
-            .getAndroidManifest()
-            .getSplitId()
-            .map(BundleModuleName::create)
-            .orElse(BundleModuleName.BASE_MODULE_NAME);
-
-    return bundleModule.toBuilder().setName(actualModuleName).build();
   }
 }

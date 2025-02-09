@@ -17,7 +17,6 @@ package com.android.tools.build.bundletool.model.utils;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.truth.Truth8.assertThat;
 
 import com.android.tools.build.bundletool.testing.FakeSystemEnvironmentProvider;
 import com.google.common.collect.ImmutableMap;
@@ -126,9 +125,38 @@ public final class SdkToolsLocatorTest {
     public static Collection<Object[]> data() {
       return Arrays.asList(
           new Object[][] {
-            {"Unix", Configuration.unix(), ":", "/nonexistent:/bin", "/bin", ""},
-            {"Windows", Configuration.windows(), ";", "C:\\nonexistent;C:\\bin", "C:\\bin", ".exe"},
-            {"OS X", Configuration.osX(), ":", "/nonexistent:/bin", "/bin", ""}
+            {
+              /* osName */ "Unix",
+              /* osConfiguration */ Configuration.unix(),
+              /* pathSeparator */ ":",
+              /* systemPath */ "/nonexistent:/bin:\"invalid-path",
+              /* goodPathDir */ "/bin",
+              /* executableExtension */ ""
+            },
+            {
+              /* osName */ "Windows",
+              /* osConfiguration */ Configuration.windows(),
+              /* pathSeparator */ ";",
+              /* systemPath */ "C:\\nonexistent;C:\\bin;\"invalid-path",
+              /* goodPathDir */ "C:\\bin",
+              /* executableExtension */ ".exe"
+            },
+            {
+              /* osName */ "Windows ('c:\\adb' dir)",
+              /* osConfiguration */ Configuration.windows(),
+              /* pathSeparator */ ";",
+              /* systemPath */ "C:\\nonexistent;C:\\adb;\"invalid-path",
+              /* goodPathDir */ "C:\\adb",
+              /* executableExtension */ ".exe"
+            },
+            {
+              /* osName */ "OS X",
+              /* osConfiguration */ Configuration.osX(),
+              /* pathSeparator */ ":",
+              /* systemPath */ "/nonexistent:/bin:\"invalid-path",
+              /* goodPathDir */ "/bin",
+              /* executableExtension */ ""
+            }
           });
     }
 

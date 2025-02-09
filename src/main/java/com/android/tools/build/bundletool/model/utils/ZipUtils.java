@@ -17,31 +17,41 @@
 package com.android.tools.build.bundletool.model.utils;
 
 import static com.android.tools.build.bundletool.model.utils.files.FilePreconditions.checkFileExistsAndReadable;
+import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Predicates.not;
 
-import com.android.tools.build.bundletool.model.InputStreamSupplier;
 import com.android.tools.build.bundletool.model.ZipPath;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
-import com.google.common.io.ByteStreams;
-import com.google.common.io.CountingOutputStream;
+import com.google.common.io.ByteSource;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.stream.Stream;
-import java.util.zip.GZIPOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
-import javax.annotation.WillNotClose;
+import java.util.zip.ZipInputStream;
 
 /** Misc utilities for working with zip files. */
 public final class ZipUtils {
 
-  // See {@link GZIPOutputStream#writeHeader}.
-  private static final long GZIP_HEADER_SIZE = 10L;
-
   public static Stream<ZipPath> allFileEntriesPaths(ZipFile zipFile) {
     return allFileEntries(zipFile).map(zipEntry -> ZipPath.create(zipEntry.getName()));
+  }
+
+  public static ImmutableList<ZipPath> allFileEntriesPaths(ZipInputStream zipInputStream) {
+    ImmutableList.Builder<ZipPath> listBuilder = new ImmutableList.Builder<>();
+    try {
+      ZipEntry zipEntry;
+      while ((zipEntry = zipInputStream.getNextEntry()) != null) {
+        listBuilder.add(ZipPath.create(zipEntry.getName()));
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException(
+          String.format("Error reading zip file '%s'.", zipInputStream), e);
+    }
+    return listBuilder.build();
   }
 
   public static Stream<? extends ZipEntry> allFileEntries(ZipFile zipFile) {
@@ -57,42 +67,48 @@ public final class ZipUtils {
     }
   }
 
-  /** Calculates the GZip compressed size in bytes of the target {@code stream}. */
-  public static long calculateGzipCompressedSize(@WillNotClose InputStream stream)
-      throws IOException {
-    CountingOutputStream countingOutputStream =
-        new CountingOutputStream(ByteStreams.nullOutputStream());
-    try (GZIPOutputStream compressedStream = new GZIPOutputStream(countingOutputStream)) {
-      ByteStreams.copy(stream, compressedStream);
-    }
-    return countingOutputStream.getCount();
+  /**
+   * Converts a path relative to the bundle zip root to one relative to the module path.
+   *
+   * <p>In the bundle zip, top-level directories denote module names (eg.
+   * "module_name/res/drawable.icon"), hence 1 path name needs to be skipped when resolving relative
+   * path of a module entry.
+   */
+  public static ZipPath convertBundleToModulePath(ZipPath bundlePath) {
+    return bundlePath.subpath(1, bundlePath.getNameCount());
   }
 
   /**
-   * Given a list of {@link InputStreamSupplier} passes those streams through a {@link
-   * GZIPOutputStream} and computes the GZIP size increments attributed to each stream.
+   * Returns a new {@link ByteSource} for reading the contents of the given entry in the given zip
+   * file.
    */
-  public static ImmutableList<Long> calculateGZipSizeForEntries(
-      ImmutableList<InputStreamSupplier> streams) throws IOException {
-    ImmutableList.Builder<Long> gzipSizeIncrements = ImmutableList.builder();
-    CountingOutputStream countingOutputStream =
-        new CountingOutputStream(ByteStreams.nullOutputStream());
-    long lastOffset = GZIP_HEADER_SIZE;
-    // We need to use syncFlush which is slower but allows us to accurately count GZIP bytes.
-    // See {@link Deflater#SYNC_FLUSH}. Sync-flush flushes all deflater's pending output upon
-    // calling flush().
-    try (GZIPOutputStream compressedStream =
-        new GZIPOutputStream(countingOutputStream, /* syncFlush= */ true)) {
-      for (InputStreamSupplier stream : streams) {
-        try (InputStream is = stream.get()) {
-          ByteStreams.copy(is, compressedStream);
-          compressedStream.flush();
-          gzipSizeIncrements.add(countingOutputStream.getCount() - lastOffset);
-          lastOffset = countingOutputStream.getCount();
-        }
-      }
+  public static ByteSource asByteSource(ZipFile file, ZipEntry entry) {
+    return new ZipEntryByteSource(file, entry);
+  }
+
+  private static final class ZipEntryByteSource extends ByteSource {
+    private final ZipFile file;
+    private final ZipEntry entry;
+
+    ZipEntryByteSource(ZipFile file, ZipEntry entry) {
+      this.file = checkNotNull(file);
+      this.entry = checkNotNull(entry);
     }
-    return gzipSizeIncrements.build();
+
+    @Override
+    public InputStream openStream() throws IOException {
+      return file.getInputStream(entry);
+    }
+
+    @Override
+    public Optional<Long> sizeIfKnown() {
+      return entry.getSize() == -1 ? Optional.absent() : Optional.of(entry.getSize());
+    }
+
+    @Override
+    public String toString() {
+      return "ZipUtils.asByteSource(" + file + ", " + entry + ")";
+    }
   }
 
   // Not meant to be instantiated.
